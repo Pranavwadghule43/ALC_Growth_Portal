@@ -32,7 +32,6 @@ class UserOut(ORMModel):
 class LoginIn(BaseModel):
     identifier: str = Field(min_length=2, max_length=255)
     password: str = Field(min_length=8, max_length=256)
-    portal: Role
 
 
 class ChangePasswordIn(BaseModel):

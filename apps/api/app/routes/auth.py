@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from redis.asyncio import Redis
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -73,30 +73,38 @@ async def login(
     payload: LoginIn, request: Request, response: Response, db: AsyncSession = Depends(get_db)
 ):
     await check_rate_limit(request)
-    query = select(User).options(selectinload(User.alc))
-    if payload.portal == Role.ALC:
-        query = query.join(ALC, User.alc_id == ALC.id).where(
-            func.lower(ALC.alc_code) == payload.identifier.lower()
-        )
-    else:
-        query = query.where(
+    identifier = payload.identifier.lower()
+    # The backend determines the account and role from the identifier alone: an
+    # admin authenticates with a username/email, an ALC with its unique ALC code.
+    # The role is derived server-side; the client never sends a trusted role.
+    query = (
+        select(User)
+        .outerjoin(ALC, User.alc_id == ALC.id)
+        .options(selectinload(User.alc))
+        .where(
             or_(
-                func.lower(User.username) == payload.identifier.lower(),
-                func.lower(User.email) == payload.identifier.lower(),
+                and_(
+                    User.role == Role.ADMIN,
+                    or_(
+                        func.lower(User.username) == identifier,
+                        func.lower(User.email) == identifier,
+                    ),
+                ),
+                and_(User.role == Role.ALC, func.lower(ALC.alc_code) == identifier),
             )
         )
+    )
     user = await db.scalar(query)
     if (
         not user
-        or user.role != payload.portal
         or not user.is_active
         or not verify_password(payload.password, user.password_hash)
     ):
-        await record_audit(
-            db, "login_failed", "user", request=request, metadata={"portal": payload.portal.value}
-        )
+        await record_audit(db, "login_failed", "user", request=request)
         await db.commit()
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(
+            status_code=401, detail="Invalid username/ALC code or password"
+        )
     if user.alc and user.alc.status.value != "ACTIVE":
         raise HTTPException(status_code=401, detail="Account unavailable")
     raw_refresh, refresh_hash = new_refresh_token()
