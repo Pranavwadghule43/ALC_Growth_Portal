@@ -1,0 +1,47 @@
+[project]
+name = "alc-growth-api"
+version = "1.0.0"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+  "sqlalchemy[asyncio]>=2.0.35,<3",
+  "asyncpg>=0.29,<1",
+  "alembic>=1.13,<2",
+  "pydantic-settings>=2.6,<3",
+  "pyjwt>=2.9,<3",
+  "argon2-cffi>=23.1,<26",
+  "python-multipart>=0.0.12,<1",
+  "boto3>=1.35,<2",
+  "redis>=5,<6",
+  "email-validator>=2.2,<3",
+  "structlog>=24.4,<26"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+  "pytest-asyncio>=0.24,<1",
+  "httpx>=0.27,<1",
+  "aiosqlite>=0.20,<1",
+  "ruff>=0.7,<1"
+]
+
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["B008"] # FastAPI dependency injection intentionally uses Depends in defaults.

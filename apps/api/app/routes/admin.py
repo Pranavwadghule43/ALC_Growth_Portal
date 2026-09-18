@@ -1,0 +1,764 @@
+import csv
+import io
+import math
+import uuid
+from datetime import date, timedelta
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
+from sqlalchemy import and_, case, desc, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.auth import hash_password
+from app.config import settings
+from app.database import get_db
+from app.dependencies import pagination, require_admin, require_csrf
+from app.enums import ActivityStatus, ReviewAction, Role
+from app.models import ALC, Activity, ActivityEvidence, AuditLog, Partner, User
+from app.schemas import (
+    ActivityOut,
+    AlcStatusPatch,
+    ReviewDecisionIn,
+    UserCreate,
+    UserOut,
+    UserPatch,
+)
+from app.services.activities import admin_activity, review_activity
+from app.services.audit import record_audit
+from app.services.csv_export import safe_csv
+from app.storage import storage_service
+
+router = APIRouter(prefix="/admin", tags=["Admin"], dependencies=[Depends(require_csrf)])
+
+
+@router.get("/dashboard")
+async def dashboard(_: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    alc_counts = (
+        (
+            await db.execute(
+                select(
+                    func.count(ALC.id).label("total_alcs"),
+                    func.count(case((ALC.status == "ACTIVE", 1))).label("active_alcs"),
+                )
+            )
+        )
+        .mappings()
+        .one()
+    )
+    metrics = (
+        (
+            await db.execute(
+                select(
+                    func.count(case((Activity.status != ActivityStatus.DRAFT, 1))).label(
+                        "activities_submitted"
+                    ),
+                    func.count(
+                        case(
+                            (
+                                Activity.status.in_(
+                                    [
+                                        ActivityStatus.SUBMITTED,
+                                        ActivityStatus.RESUBMITTED,
+                                        ActivityStatus.UNDER_REVIEW,
+                                    ]
+                                ),
+                                1,
+                            )
+                        )
+                    ).label("pending_verification"),
+                    func.count(case((Activity.status == ActivityStatus.VERIFIED, 1))).label(
+                        "verified_activities"
+                    ),
+                    func.count(
+                        case((Activity.status == ActivityStatus.CORRECTION_REQUIRED, 1))
+                    ).label("correction_required"),
+                    func.count(case((Activity.status == ActivityStatus.REJECTED, 1))).label(
+                        "rejected_activities"
+                    ),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    Activity.status == ActivityStatus.VERIFIED,
+                                    Activity.learners_reached,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("verified_learners"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    Activity.status == ActivityStatus.VERIFIED,
+                                    Activity.leads_generated,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("verified_leads"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    Activity.status == ActivityStatus.VERIFIED,
+                                    Activity.admissions_generated,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("verified_admissions"),
+                )
+            )
+        )
+        .mappings()
+        .one()
+    )
+    active_partners = (
+        await db.scalar(select(func.count(Partner.id)).where(Partner.status == "ACTIVE")) or 0
+    )
+    status_rows = (
+        await db.execute(select(Activity.status, func.count(Activity.id)).group_by(Activity.status))
+    ).all()
+    trend_rows = (
+        await db.execute(
+            select(Activity.activity_date, func.count(Activity.id))
+            .group_by(Activity.activity_date)
+            .order_by(Activity.activity_date.desc())
+            .limit(30)
+        )
+    ).all()
+    categories = (
+        await db.execute(
+            select(Activity.activity_type, func.count(Activity.id))
+            .where(Activity.status == ActivityStatus.VERIFIED)
+            .group_by(Activity.activity_type)
+            .order_by(func.count(Activity.id).desc())
+            .limit(8)
+        )
+    ).all()
+    return {
+        **alc_counts,
+        **metrics,
+        "active_partnerships": active_partners,
+        "status_distribution": [{"name": s.value, "value": c} for s, c in status_rows],
+        "submission_trend": [{"date": str(d), "count": c} for d, c in reversed(trend_rows)],
+        "verified_categories": [{"name": n, "value": c} for n, c in categories],
+    }
+
+
+def queue_filters(status, activity_type, ecosystem, alc_id, date_from, date_to, search):
+    filters = []
+    if status:
+        filters.append(Activity.status == status)
+    if activity_type:
+        filters.append(Activity.activity_type == activity_type)
+    if ecosystem:
+        filters.append(Activity.ecosystem == ecosystem)
+    if alc_id:
+        filters.append(Activity.alc_id == alc_id)
+    if date_from:
+        filters.append(Activity.submitted_at >= date_from)
+    if date_to:
+        filters.append(Activity.submitted_at < date_to)
+    if search:
+        filters.append(
+            or_(
+                Activity.activity_number.ilike(f"%{search}%"),
+                ALC.alc_code.ilike(f"%{search}%"),
+                ALC.alc_name.ilike(f"%{search}%"),
+                Partner.partner_name.ilike(f"%{search}%"),
+            )
+        )
+    return filters
+
+
+@router.get("/verification-queue")
+@router.get("/activities")
+async def activities(
+    page_data: tuple[int, int] = Depends(pagination),
+    status: ActivityStatus | None = None,
+    activity_type: str | None = None,
+    ecosystem: str | None = None,
+    alc_id: uuid.UUID | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    search: str | None = None,
+    queue_only: bool = False,
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    page, page_size = page_data
+    if queue_only and not status:
+        status_values = [
+            ActivityStatus.SUBMITTED,
+            ActivityStatus.RESUBMITTED,
+            ActivityStatus.UNDER_REVIEW,
+        ]
+        base = [Activity.status.in_(status_values)]
+    else:
+        base = []
+    filters = base + queue_filters(
+        status, activity_type, ecosystem, alc_id, date_from, date_to, search
+    )
+    joined = (
+        select(Activity, ALC)
+        .join(ALC, Activity.alc_id == ALC.id)
+        .outerjoin(Partner, Activity.partner_id == Partner.id)
+        .where(*filters)
+    )
+    total = (
+        await db.scalar(
+            select(func.count(Activity.id))
+            .join(ALC, Activity.alc_id == ALC.id)
+            .outerjoin(Partner, Activity.partner_id == Partner.id)
+            .where(*filters)
+        )
+        or 0
+    )
+    rows = (
+        await db.execute(
+            joined.options(
+                selectinload(Activity.partner),
+                selectinload(Activity.evidence),
+                selectinload(Activity.reviews),
+                selectinload(Activity.revisions),
+            )
+            .order_by(desc(Activity.submitted_at), desc(Activity.updated_at))
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+    return {
+        "items": [
+            {
+                "activity": ActivityOut.model_validate(activity),
+                "alc": {
+                    "id": alc.id,
+                    "alc_code": alc.alc_code,
+                    "alc_name": alc.alc_name,
+                    "status": alc.status,
+                },
+            }
+            for activity, alc in rows
+        ],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "pages": math.ceil(total / page_size) if total else 0,
+    }
+
+
+@router.get("/activities/{activity_id}")
+async def get_activity(
+    activity_id: uuid.UUID, _: User = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    activity = await admin_activity(db, activity_id)
+    alc = await db.get(ALC, activity.alc_id)
+    return {
+        "activity": ActivityOut.model_validate(activity),
+        "alc": {
+            "id": alc.id,
+            "alc_code": alc.alc_code,
+            "alc_name": alc.alc_name,
+            "status": alc.status,
+        },
+    }
+
+
+async def make_decision(
+    activity_id: uuid.UUID,
+    payload: ReviewDecisionIn,
+    action: ReviewAction,
+    request: Request,
+    admin: User,
+    db: AsyncSession,
+):
+    activity = await admin_activity(db, activity_id, lock=True)
+    await review_activity(db, activity, admin, action, payload.remark)
+    await record_audit(
+        db,
+        action.value.lower(),
+        "activity",
+        activity.id,
+        admin,
+        request,
+        {"remark": payload.remark},
+    )
+    await db.commit()
+    return await admin_activity(db, activity.id)
+
+
+@router.post("/activities/{activity_id}/verify", response_model=ActivityOut)
+async def verify(
+    activity_id: uuid.UUID,
+    payload: ReviewDecisionIn,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    return await make_decision(activity_id, payload, ReviewAction.VERIFY, request, admin, db)
+
+
+@router.post("/activities/{activity_id}/request-correction", response_model=ActivityOut)
+async def request_correction(
+    activity_id: uuid.UUID,
+    payload: ReviewDecisionIn,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    return await make_decision(
+        activity_id, payload, ReviewAction.REQUEST_CORRECTION, request, admin, db
+    )
+
+
+@router.post("/activities/{activity_id}/reject", response_model=ActivityOut)
+async def reject(
+    activity_id: uuid.UUID,
+    payload: ReviewDecisionIn,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    return await make_decision(activity_id, payload, ReviewAction.REJECT, request, admin, db)
+
+
+@router.get("/evidence/{evidence_id}/access")
+async def evidence_access(
+    evidence_id: uuid.UUID,
+    request: Request,
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    evidence = await db.scalar(
+        select(ActivityEvidence).where(
+            ActivityEvidence.id == evidence_id, ActivityEvidence.is_active.is_(True)
+        )
+    )
+    if not evidence:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+    if settings.storage_backend == "local":
+        return {"url": f"{str(request.base_url).rstrip('/')}/api/admin/evidence/{evidence_id}/content", "expires_in": 0}
+    return {"url": await storage_service.get_secure_url(evidence.storage_key), "expires_in": settings.s3_presign_seconds}
+
+
+@router.get("/evidence/{evidence_id}/content")
+async def evidence_content(
+    evidence_id: uuid.UUID,
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if settings.storage_backend != "local":
+        raise HTTPException(status_code=404, detail="Evidence not found")
+    evidence = await db.scalar(select(ActivityEvidence).where(ActivityEvidence.id == evidence_id, ActivityEvidence.is_active.is_(True)))
+    if not evidence:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+    return Response(await storage_service.get(evidence.storage_key), media_type=evidence.mime_type, headers={"Cache-Control": "private, no-store"})
+
+
+@router.get("/alcs")
+async def alcs(
+    page_data: tuple[int, int] = Depends(pagination),
+    search: str | None = None,
+    status: str | None = None,
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    page, page_size = page_data
+    filters = []
+    if search:
+        filters.append(or_(ALC.alc_code.ilike(f"%{search}%"), ALC.alc_name.ilike(f"%{search}%")))
+    if status:
+        filters.append(ALC.status == status)
+    total = await db.scalar(select(func.count(ALC.id)).where(*filters)) or 0
+    rows = (
+        (
+            await db.execute(
+                select(
+                    ALC.id,
+                    ALC.alc_code,
+                    ALC.alc_name,
+                    ALC.status,
+                    func.count(Activity.id).label("activities"),
+                    func.count(case((Activity.status == ActivityStatus.VERIFIED, 1))).label(
+                        "verified"
+                    ),
+                    func.count(
+                        case(
+                            (
+                                Activity.status.in_(
+                                    [
+                                        ActivityStatus.SUBMITTED,
+                                        ActivityStatus.RESUBMITTED,
+                                        ActivityStatus.UNDER_REVIEW,
+                                    ]
+                                ),
+                                1,
+                            )
+                        )
+                    ).label("pending"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    Activity.status == ActivityStatus.VERIFIED,
+                                    Activity.learners_reached,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("learners"),
+                    func.max(Activity.activity_date).label("last_activity"),
+                )
+                .outerjoin(Activity, ALC.id == Activity.alc_id)
+                .where(*filters)
+                .group_by(ALC.id)
+                .order_by(ALC.alc_code)
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return {
+        "items": rows,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "pages": math.ceil(total / page_size) if total else 0,
+    }
+
+
+@router.get("/alcs/{alc_id}")
+async def alc_detail(
+    alc_id: uuid.UUID, _: User = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    alc = await db.get(ALC, alc_id)
+    if not alc:
+        raise HTTPException(status_code=404, detail="ALC not found")
+    activities = (
+        await db.scalars(
+            select(Activity)
+            .options(
+                selectinload(Activity.partner),
+                selectinload(Activity.evidence),
+                selectinload(Activity.reviews),
+                selectinload(Activity.revisions),
+            )
+            .where(Activity.alc_id == alc_id)
+            .order_by(desc(Activity.updated_at))
+            .limit(100)
+        )
+    ).all()
+    partners = (
+        await db.scalars(
+            select(Partner).where(Partner.alc_id == alc_id).order_by(Partner.partner_name)
+        )
+    ).all()
+    return {
+        "alc": alc,
+        "activities": [ActivityOut.model_validate(x) for x in activities],
+        "partners": partners,
+    }
+
+
+@router.patch("/alcs/{alc_id}")
+async def update_alc_status(
+    alc_id: uuid.UUID,
+    payload: AlcStatusPatch,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    alc = await db.get(ALC, alc_id)
+    if not alc:
+        raise HTTPException(status_code=404, detail="ALC not found")
+    alc.status = payload.status
+    await record_audit(
+        db, "alc_status_changed", "alc", alc.id, admin, request, {"status": payload.status.value}
+    )
+    await db.commit()
+    return {"id": alc.id, "alc_code": alc.alc_code, "alc_name": alc.alc_name, "status": alc.status}
+
+
+@router.get("/partners")
+async def all_partners(
+    page_data: tuple[int, int] = Depends(pagination),
+    search: str | None = None,
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    page, page_size = page_data
+    filters = []
+    if search:
+        filters.append(
+            or_(
+                Partner.partner_name.ilike(f"%{search}%"),
+                ALC.alc_name.ilike(f"%{search}%"),
+                ALC.alc_code.ilike(f"%{search}%"),
+            )
+        )
+    total = await db.scalar(select(func.count(Partner.id)).join(ALC).where(*filters)) or 0
+    rows = (
+        await db.execute(
+            select(Partner, ALC)
+            .join(ALC)
+            .where(*filters)
+            .order_by(Partner.partner_name)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+    return {
+        "items": [{"partner": partner, "alc": alc} for partner, alc in rows],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "pages": math.ceil(total / page_size) if total else 0,
+    }
+
+
+@router.get("/challenge")
+async def challenge_progress(
+    page_data: tuple[int, int] = Depends(pagination),
+    search: str | None = None,
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    page, page_size = page_data
+    today = date.today()
+    start = today - timedelta(days=29)
+    filters = (
+        [or_(ALC.alc_code.ilike(f"%{search}%"), ALC.alc_name.ilike(f"%{search}%"))]
+        if search
+        else []
+    )
+    total = await db.scalar(select(func.count(ALC.id)).where(*filters)) or 0
+    rows = (
+        (
+            await db.execute(
+                select(
+                    ALC.id,
+                    ALC.alc_code,
+                    ALC.alc_name,
+                    func.coalesce(func.sum(Activity.leads_generated), 0).label("prospects"),
+                    func.count(
+                        case(
+                            (
+                                func.lower(Activity.activity_type).like("%meeting%"),
+                                1,
+                            )
+                        )
+                    ).label("meetings"),
+                    func.count(
+                        case(
+                            (
+                                func.lower(Activity.activity_type).like("%pilot%"),
+                                1,
+                            )
+                        )
+                    ).label("pilots"),
+                    func.count(
+                        func.distinct(
+                            case(
+                                (
+                                    func.lower(Activity.activity_type).like("%partnership%"),
+                                    Activity.partner_id,
+                                )
+                            )
+                        )
+                    ).label("partnerships"),
+                )
+                .outerjoin(
+                    Activity,
+                    and_(
+                        ALC.id == Activity.alc_id,
+                        Activity.status == ActivityStatus.VERIFIED,
+                        Activity.activity_date >= start,
+                        Activity.activity_date <= today,
+                    ),
+                )
+                .where(*filters)
+                .group_by(ALC.id)
+                .order_by(ALC.alc_code)
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return {
+        "items": rows,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "pages": math.ceil(total / page_size) if total else 0,
+        "targets": {"prospects": 40, "meetings": 20, "pilots": 10, "partnerships": 5},
+    }
+
+
+@router.get("/users", response_model=list[UserOut])
+async def users(_: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    return (
+        await db.scalars(select(User).options(selectinload(User.alc)).order_by(User.username))
+    ).all()
+
+
+@router.post("/users", response_model=UserOut, status_code=201)
+async def create_user(
+    payload: UserCreate,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if payload.role == Role.ALC and not payload.alc_id:
+        raise HTTPException(status_code=422, detail="ALC is required")
+    if payload.role == Role.ADMIN and payload.alc_id:
+        raise HTTPException(status_code=422, detail="Admin cannot belong to an ALC")
+    if await db.scalar(select(User.id).where(User.username == payload.username)):
+        raise HTTPException(status_code=409, detail="Username already exists")
+    user = User(
+        username=payload.username,
+        email=str(payload.email) if payload.email else None,
+        role=payload.role,
+        alc_id=payload.alc_id,
+        password_hash=hash_password(payload.password),
+        must_change_password=payload.must_change_password,
+    )
+    db.add(user)
+    await db.flush()
+    await record_audit(db, "user_created", "user", user.id, admin, request)
+    await db.commit()
+    return await db.scalar(select(User).options(selectinload(User.alc)).where(User.id == user.id))
+
+
+@router.patch("/users/{user_id}", response_model=UserOut)
+async def update_user(
+    user_id: uuid.UUID,
+    payload: UserPatch,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if payload.is_active is not None:
+        user.is_active = payload.is_active
+    if payload.password:
+        user.password_hash = hash_password(payload.password)
+        user.must_change_password = (
+            True if payload.must_change_password is None else payload.must_change_password
+        )
+    elif payload.must_change_password is not None:
+        user.must_change_password = payload.must_change_password
+    changes = payload.model_dump(exclude_none=True, exclude={"password"})
+    if payload.password:
+        changes["password_reset"] = True
+    await record_audit(db, "user_updated", "user", user.id, admin, request, changes)
+    await db.commit()
+    return await db.scalar(select(User).options(selectinload(User.alc)).where(User.id == user.id))
+
+
+@router.get("/audit-logs")
+async def audit_logs(
+    page_data: tuple[int, int] = Depends(pagination),
+    action: str | None = None,
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    page, page_size = page_data
+    filters = [AuditLog.action == action] if action else []
+    total = await db.scalar(select(func.count(AuditLog.id)).where(*filters)) or 0
+    items = (
+        await db.scalars(
+            select(AuditLog)
+            .where(*filters)
+            .order_by(desc(AuditLog.created_at))
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+    return {
+        "items": items,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "pages": math.ceil(total / page_size) if total else 0,
+    }
+
+
+@router.get("/reports/activities.csv")
+async def report(
+    date_from: date | None = None,
+    date_to: date | None = None,
+    alc_id: uuid.UUID | None = None,
+    status: ActivityStatus | None = None,
+    activity_type: str | None = None,
+    ecosystem: str | None = None,
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    filters = queue_filters(status, activity_type, ecosystem, alc_id, date_from, date_to, None)
+    rows = (
+        await db.execute(
+            select(Activity, ALC).join(ALC).where(*filters).order_by(desc(Activity.activity_date))
+        )
+    ).all()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "Activity Number",
+            "ALC Code",
+            "ALC Name",
+            "Date",
+            "Type",
+            "Ecosystem",
+            "Status",
+            "Learners",
+            "Leads",
+            "Admissions",
+        ]
+    )
+    for activity, alc in rows:
+        writer.writerow(
+            [
+                safe_csv(value)
+                for value in [
+                    activity.activity_number,
+                    alc.alc_code,
+                    alc.alc_name,
+                    activity.activity_date,
+                    activity.activity_type,
+                    activity.ecosystem,
+                    activity.status.value,
+                    activity.learners_reached,
+                    activity.leads_generated,
+                    activity.admissions_generated,
+                ]
+            ]
+        )
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=activity-report.csv"},
+    )
+
+
+@router.get("/settings")
+async def get_settings(_: User = Depends(require_admin)):
+    return {
+        "max_upload_files": settings.max_upload_files,
+        "max_upload_bytes": settings.max_upload_bytes,
+        "allowed_types": ["JPG", "JPEG", "PNG", "WEBP", "PDF"],
+        "authentication": "HttpOnly cookie + refresh rotation + CSRF",
+    }

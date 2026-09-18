@@ -1,0 +1,13 @@
+from abc import ABC, abstractmethod
+
+
+class StorageService(ABC):
+    @abstractmethod
+    async def upload(self, key: str, body: bytes, content_type: str) -> None: ...
+
+    @abstractmethod
+    async def get(self, key: str) -> bytes: ...
+    @abstractmethod
+    async def delete(self, key: str) -> None: ...
+    @abstractmethod
+    async def get_secure_url(self, key: str) -> str: ...
