@@ -1,0 +1,19 @@
+import { ReactNode } from 'react'
+import { AlertCircle, Inbox } from 'lucide-react'
+import type { Status } from '../types'
+
+const statusClasses: Record<string, string> = {
+  DRAFT: 'bg-slate-100 text-slate-700', SUBMITTED: 'bg-blue-100 text-blue-800', UNDER_REVIEW: 'bg-indigo-100 text-indigo-800',
+  CORRECTION_REQUIRED: 'bg-amber-100 text-amber-900', RESUBMITTED: 'bg-violet-100 text-violet-800', VERIFIED: 'bg-emerald-100 text-emerald-800', REJECTED: 'bg-red-100 text-red-800',
+  ACTIVE: 'bg-emerald-100 text-emerald-800', INACTIVE: 'bg-slate-100 text-slate-600', OPEN: 'bg-blue-100 text-blue-800', COMPLETED: 'bg-emerald-100 text-emerald-800'
+}
+export function Badge({ status }: { status: Status | string }) { return <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${statusClasses[status] ?? 'bg-slate-100 text-slate-700'}`}>{status.replaceAll('_', ' ')}</span> }
+export function PageHeader({ title, description, actions }: { title: string; description?: string; actions?: ReactNode }) { return <div className="mb-6 flex flex-wrap items-start justify-between gap-4"><div><h1 className="text-2xl font-bold tracking-tight text-navy">{title}</h1>{description && <p className="mt-1 text-sm text-slate-600">{description}</p>}</div>{actions}</div> }
+export function MetricCard({ label, value, hint }: { label: string; value: string | number; hint?: string }) { return <div className="panel p-4"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p><p className="mt-2 text-2xl font-bold text-navy">{value}</p>{hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}</div> }
+export function Loading({ label = 'Loading' }: { label?: string }) { return <div className="panel flex min-h-40 items-center justify-center p-8 text-sm text-slate-500"><span className="mr-3 h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-teal"/>{label}…</div> }
+export function Empty({ title = 'Nothing to show', message = 'Records will appear here when available.' }: { title?: string; message?: string }) { return <div className="panel flex min-h-44 flex-col items-center justify-center p-8 text-center"><Inbox className="mb-3 text-slate-400"/><h3 className="font-semibold">{title}</h3><p className="mt-1 max-w-md text-sm text-slate-500">{message}</p></div> }
+export function ErrorState({ error }: { error: unknown }) { return <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800"><AlertCircle className="mr-2 inline h-4 w-4"/>{error instanceof Error ? error.message : 'Unable to load this section'}</div> }
+export function FieldError({ message }: { message?: string }) { return message ? <p className="mt-1 text-xs text-red-700">{message}</p> : null }
+export function formatDate(value?: string) { return value ? new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium' }).format(new Date(value)) : '—' }
+export function formatNumber(value?: number) { return new Intl.NumberFormat('en-IN').format(value ?? 0) }
+
