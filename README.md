@@ -1,13 +1,70 @@
 # ALC Growth Portal
 
-An evidence-led growth and collaboration portal for Authorized Learning Centres. ALC users see only their own records; administrators review submitted evidence and make auditable verification, correction, or rejection decisions.
+An evidence-led growth and collaboration portal for Authorized Learning Centres (ALCs). ALC
+users record activities and submit supporting evidence; SBU users oversee the ALCs assigned
+to their Strategic Business Unit; and administrators oversee everything. Every verification,
+correction, and rejection decision is auditable, and only verified outcomes count toward
+official performance.
+
+## Roles and portals
+
+| Role | Portal | Login identifier |
+| --- | --- | --- |
+| `ADMIN` (shown as "Super Admin") | `/admin` | username / email + password |
+| `SBU` | `/portal` | username / email + password |
+| `ALC` | `/portal` | ALC Code + password |
+
+- **One common login** — there is no role selector. The backend authenticates the account
+  and determines its role; the frontend never sends a trusted role.
+- **ADMIN** has global access through the Super Admin portal at `/admin`.
+- **SBU** and **ALC** share the operational portal at `/portal`; navigation and data are
+  scoped by role.
+
+### Data isolation
+
+- **ALC isolation:** an ALC user sees only its own centre's activities, partners, tasks,
+  evidence, and reports. Ownership is enforced server-side on every read and write.
+- **SBU isolation:** an SBU user sees only the ALCs assigned to its SBU (`ALC.sbu_id`). Any
+  attempt to reach another SBU's ALC, activity, or evidence — including by direct ID or URL
+  — returns a not-found response.
+- Scoping is enforced in the API and the database, never in the frontend.
+
+### SBU ↔ ALC relationship
+
+One SBU has many ALCs (`ALC.sbu_id`); each ALC belongs to at most one SBU. Admins assign and
+reassign ALCs to SBUs. SBU users can monitor, verify, request correction on, or reject the
+activities of their assigned ALCs, and reset those ALC users' passwords.
+
+### Activity verification workflow
+
+1. An ALC creates a draft with non-negative metrics and an activity date no later than today.
+2. Attach at least one JPG/JPEG, PNG, WEBP, or PDF (default limit 10 files, 10 MB each). The
+   API checks extension, declared MIME, and file signature; storage keys are generated
+   server-side. Evidence stays private, and access URLs are short-lived.
+3. The ALC submits, which locks editing. An SBU (for its assigned ALCs) or an ADMIN reviews
+   the queue, opens the private evidence, then **verifies**, **requests correction** (reason
+   required), or **rejects** (reason required).
+4. Correction unlocks the activity for editing and resubmission. Every decision and
+   submission snapshot is retained. Only verified reach, leads, and admissions count in
+   official performance metrics; draft or pending figures do not. Challenge partnership
+   achievement requires a verified partnership activity linked to a partner.
 
 ## Architecture
 
-- `apps/web`: React 18, TypeScript, Vite, Tailwind, TanStack Query, React Hook Form, Zod, Recharts.
-- `apps/api`: Python 3.11+, FastAPI, SQLAlchemy 2 async, Alembic, Argon2id, JWT access cookies, rotating opaque refresh tokens.
-- PostgreSQL for transactional data; Redis for login throttling; private S3-compatible object storage (MinIO locally).
-- The backend API is a separate service; the frontend is prepared for Vercel. Keep the API and frontend on the same registrable domain (for example `portal.example.org` and `api.example.org`) so SameSite cookies work.
+- `apps/web`: React, TypeScript, Vite, Tailwind, TanStack Query, React Hook Form, Zod,
+  Recharts.
+- `apps/api`: Python 3.11+, FastAPI, SQLAlchemy 2 (async), Alembic, Argon2id password
+  hashing, JWT access cookies, and rotating opaque refresh tokens.
+- **PostgreSQL** for transactional data; **Redis** for login throttling; local evidence
+  storage for development and **MinIO / S3-compatible** private object storage for production.
+- The backend API is a separate service; the frontend is prepared for Vercel. Keep the API
+  and frontend on the same registrable domain (for example `portal.example.org` and
+  `api.example.org`) so SameSite cookies work.
+
+> **Status note:** the common login, the SBU role, and the unified `/portal` experience are
+> implemented on the `feature/common-login` and `feature/sbu-operational-portal` branches and
+> are not yet merged into `main`. `main` still carries the earlier role-selector login and
+> `/alc` routing. See `REMAINING-WORK.md` for the exact branch and completion status.
 
 ## Requirements
 
@@ -55,21 +112,23 @@ Open `http://localhost:5173`. The ALC login uses the imported `ALC Code` and the
 
 ### ALC master import
 
-The CSV must contain `ALC Code,ALC Name`. Codes remain strings, preserving leading zeroes. Rows are validated, whitespace is trimmed, duplicate codes in the file are reported, and existing codes are updated without creating duplicates. Use your real master CSV in place of the sample:
+The importer currently reads `ALC Code,ALC Name`. Codes remain strings, preserving leading
+zeroes. Rows are validated, whitespace is trimmed, duplicate codes in the file are reported,
+blank/invalid codes are skipped, and existing codes are updated without creating duplicates.
+Existing ALCs missing from a later import are never deleted, and passwords are never created
+or reset by the import. Use your real master CSV in place of the sample:
 
 ```powershell
 cd apps/api
 python -m scripts.import_alcs ../../data/ALC-MASTER.csv
 ```
 
-The CLI reports imported/updated and invalid row counts. CSV import through the admin UI is not yet available.
+The CLI reports imported/updated and invalid row counts. CSV import through the admin UI is
+not yet available.
 
-## Workflow
-
-1. An ALC creates a draft with non-negative metrics and an activity date no later than today.
-2. Attach at least one JPG/JPEG, PNG, WEBP, or PDF. The default limit is 10 files and 10 MB per file. The API checks extension, declared MIME, and file signature; keys are generated server-side. Evidence stays private, and access URLs are short-lived.
-3. Submit to lock editing. Admin reviews the queue, can open private evidence, then verifies, requests correction (reason required), or rejects (reason required).
-4. Correction unlocks the activity for editing and resubmission. Every decision and submission snapshot is retained. Verified reach, leads, and admissions count in official performance metrics; draft or pending figures do not. Challenge partnership achievement requires a verified partnership activity linked to a partner.
+The real master import will read only `ALC Code`, `ALC Name`, and `SBU` (no Taluka, Mobile,
+Email, Area Type, RCU, or DCU); `SBU` handling and the admin upload UI are still in progress
+— see `REMAINING-WORK.md`.
 
 ## Environment variables
 
@@ -115,4 +174,16 @@ Do not point production at the sample CSV, development passwords, local database
 
 ## Current limitations
 
-The portal includes the core activity, review, ownership, dashboard, partner, task, challenge, user, and CSV reporting workflows. Some requested conveniences remain for a later hardening pass: admin CSV upload UI, XLSX exports, individual notification inbox, inline image thumbnails, full settings mutation, more granular performance reports, and broader integration tests. The admin challenge overview uses the rolling 30-day period, while ALC-specific challenge periods can be configured in the database. Do not label the remaining conveniences as complete features in a public rollout.
+The portal includes the core activity, review, ownership, dashboard, partner, task,
+challenge, user, and CSV reporting workflows, plus an SBU operational layer (SBU role, SBU
+model, `sbu_id` relations, scoped `/portal` experience, verification, and password reset for
+assigned ALCs) that lives on `feature/sbu-operational-portal` and is not yet merged into
+`main`. The SBU backend is substantially complete and tested; the SBU frontend is functional
+but still needs a refinement pass. Several conveniences remain for a later hardening pass:
+the real master import reading `SBU`, the admin CSV upload UI, XLSX exports, an individual
+notification inbox, inline image thumbnails and evidence preview, full settings mutation,
+more granular performance reports, and broader integration tests against PostgreSQL and
+object storage. The admin challenge overview uses the rolling 30-day period, while
+ALC-specific challenge periods can be configured in the database. Do not label the remaining
+conveniences as complete features in a public rollout. See `REMAINING-WORK.md` for the
+developer-wise breakdown and branch status.

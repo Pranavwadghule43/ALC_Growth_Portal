@@ -1,268 +1,280 @@
 # ALC Growth Portal — Remaining Work
 
-> Based on the current uploaded project snapshot and the changes discussed after it. Update this checklist as work is completed.
+> Based on the current repository state and the latest project decisions. Update this
+> checklist as work is completed. Work is organized developer-wise: **Pranav**,
+> **Dhruvank**, and **Shared / Final Testing**.
 
-## Current Core Functionality
+## Role / Portal Structure (current decision)
 
-- [x] Admin login
-- [x] ALC login
-- [x] Role-based access
-- [x] ALC data isolation
-- [x] Activity creation
-- [x] Draft / submit workflow
-- [x] Evidence upload
+| Role | Portal | Login identifier |
+| --- | --- | --- |
+| `ADMIN` (shown as "Super Admin") | `/admin` | username / email + password |
+| `SBU` | `/portal` | username / email + password |
+| `ALC` | `/portal` | ALC Code + password |
+
+- One common login page — **no role selector**. The **backend** authenticates and
+  determines the role; the frontend never sends a trusted role.
+- One SBU → many ALCs (`ALC.sbu_id`). One ALC → one SBU. All reads/writes are scoped
+  server-side.
+
+**Branch status:** the common login + SBU + unified `/portal` architecture lives on the
+feature branches `feature/common-login` and `feature/sbu-operational-portal` (pushed, **not
+merged into `main`**). `main` still carries the older role-selector login and `/alc`
+routing. See **Git / Branch Status** at the end of this file.
+
+---
+
+## 1. Current Completed Functionality
+
+Verified against the code on the relevant branch. Items marked *(feature branch)* are
+implemented and tested but not yet merged into `main`.
+
+- [x] Admin login (username/email + password)
+- [x] ALC login (ALC Code + password)
+- [x] Role-based access control (ADMIN / ALC)
+- [x] ALC data isolation (ownership enforced server-side)
+- [x] Activity creation with non-negative metric and date validation
+- [x] Draft / submit workflow with edit locking
+- [x] Evidence upload (extension + declared MIME + file-signature checks, server-side keys)
+- [x] Private evidence access via short-lived signed URLs
 - [x] Admin verification queue
-- [x] Verify / request correction / reject
-- [x] ALC resubmission
-- [x] Partner management
+- [x] Verify / request correction (reason required) / reject (reason required)
+- [x] ALC correction + resubmission with retained decision/submission snapshots
+- [x] Partner management (create / edit)
 - [x] Tasks / follow-ups
 - [x] 30-Day Challenge base implementation
-- [x] Basic notifications backend
-- [x] Audit logs
-- [x] Basic CSV reports
-- [x] Admin user management
-- [x] Password reset workflow
-- [x] Forced password change after Admin reset
-- [x] Local PostgreSQL demo setup
-- [x] Local evidence storage for development
+- [x] Notifications backend (`Notification` model + read/mark-read endpoints)
+- [x] Audit logging (`AuditLog` model + audit service)
+- [x] Basic CSV activity reports
+- [x] Admin user management (list / create / patch users)
+- [x] Password reset workflow with forced password change after reset
+- [x] Local evidence storage adapter (development)
+- [x] S3 / MinIO evidence storage adapter (`storage/s3.py`)
+- [x] Initial Alembic migration (`20260916_0001_initial`)
+- [x] Common unified login (backend determines role, no role selector) *(feature branch)*
+- [x] Unified `/portal` experience shared by SBU and ALC *(feature branch)*
 
 ---
 
-# Remaining Features
+## 2. Current SBU Module Status
 
-## Priority 1 — Must Finish Before Wider Demo
+Implemented on `feature/sbu-operational-portal` (pushed, **not merged to `main`**). The SBU
+**backend** is substantially complete and covered by tests; the SBU **frontend** pages are
+functional but minimal and still need a refinement pass (see **Remaining work — Dhruvank**).
 
-### ALC Master Data
-- [ ] Replace sample ALC data with the real master list
-- [ ] Import all approximately 380 ALCs
-- [ ] Validate duplicate ALC codes
-- [ ] Verify correct ALC code → ALC name mapping
-- [ ] Test login with multiple real ALC accounts
+- [x] SBU role (`Role.SBU`)
+- [x] SBU database model (`sbus`: id, code unique, name, is_active, timestamps)
+- [x] `sbu_id` relation on ALC (nullable FK + relationship)
+- [x] `sbu_id` relation on User (nullable FK + relationship)
+- [x] SBU login (common login matches SBU by username/email; role derived server-side)
+- [x] SBU portal routing (`SBU → /portal`, role-guarded; ADMIN redirected off `/portal`)
+- [x] SBU dashboard (`sbu_dashboard` backend + `SbuDashboard` page, scoped metrics)
+- [x] Assigned ALC directory (`GET /portal/alcs` + `SbuAlcs`)
+- [x] SBU ALC detail (`GET /portal/alcs/{id}` + `SbuAlcDetail`)
+- [x] Scoped activity list (`GET /portal/activities` + `SbuActivities`)
+- [x] Verification queue (`GET /portal/verification`)
+- [x] Verify / request correction / reject (SBU recorded as reviewer, reuses lifecycle)
+- [x] Partner visibility for assigned ALCs (`GET /portal/partners` + `SbuPartners`)
+- [x] Reports — basic scoped CSV only (`GET /portal/reports/activities.csv` + `PortalReports`)
+- [x] Password reset for assigned ALC users (`POST /portal/alcs/{id}/reset-password`, forces change)
+- [x] SBU-specific authorization (`require_sbu` dependency)
+- [x] Strict cross-SBU isolation (`scoped_alc_ids`; out-of-scope → 404; covered by tests)
+- [x] Admin SBU management backend + minimal UI (`/admin/sbus`, ALC assignment; `AdminSbus`/`AdminSbuDetail`)
+- [x] Additive, idempotent SBU Alembic migration (`20260918_0002_sbu`)
+- [x] SBU test suite (`tests/test_sbu.py`, 19 tests; passing on SQLite)
 
-### Password Improvements
-- [ ] Add Show / Hide Password eye icon on:
-  - [ ] ALC Login
-  - [ ] Admin Login
-  - [ ] Change Password
-  - [ ] Reset Password
-  - [ ] Temporary Password forms
-- [ ] Add Admin-only "View Current ALC Password"
-- [ ] Keep Argon2 password hash for login verification
-- [ ] Store an additional encrypted password value only if Admin password viewing remains a requirement
-- [ ] Keep the encryption key server-side only
-- [ ] Add Admin-only password reveal endpoint
-- [ ] Audit every password-view action
-- [ ] Never log the actual password
+Not yet done (owned by Dhruvank — refinement, not rebuild):
+
+- [ ] SBU portal UI refinement (layout, density, consistency across SBU pages)
+- [ ] Evidence viewing (gallery / preview) for assigned ALCs
+- [ ] SBU reports beyond basic CSV (filters, XLSX)
+- [ ] SBU responsive / mobile UI
+- [ ] Consistent SBU loading / empty / error states across every page
+- [ ] Additional SBU backend/frontend tests (real PostgreSQL, direct-URL access attempts)
+
+---
+
+## 3. Remaining Work — Pranav
+
+Owns remaining Admin, ALC, data, backend, reporting, security, and deployment work.
+
+### Real ALC master import
+The current importer (`scripts/import_alcs.py`) reads only `ALC Code` and `ALC Name`; it
+does not read `SBU`. Only these source fields are required — do **not** import Taluka,
+Mobile, Email, Area Type, RCU, or DCU.
+
+- [ ] Extend the importer to read `ALC Code`, `ALC Name`, `SBU` (only these fields)
+- [ ] Treat `ALC Code` as the authoritative unique identifier
+- [ ] Update existing ALCs by code (name and SBU when changed)
+- [ ] Create new ALCs not present in the database
+- [ ] Upsert / resolve the SBU by name/code and set `alc_sbu_id`
+- [ ] Detect duplicate codes within the file
+- [ ] Detect blank / invalid codes
+- [ ] Do **not** delete existing ALCs missing from a later import
+- [ ] Do **not** create or reset passwords as part of the import
+- [ ] Replace the sample `data/ALC-MASTER.csv` with the real master and verify counts
+
+### Admin CSV import (UI)
+- [ ] Add an Admin CSV upload page
+- [ ] Validate the uploaded CSV and show valid / invalid / duplicate row counts
+- [ ] Safe upsert behavior (never delete, never touch passwords)
+- [ ] Show an import summary and write import audit logs
+
+### ALC account & user management
+- [ ] ALC account management improvements
+- [ ] Remaining Admin user management
+- [ ] Delete ALC / SBU login-account feature
 
 ### Notifications UI
-- [ ] Add notification bell in ALC header
-- [ ] Add unread counter
-- [ ] Add dedicated Notifications page
-- [ ] Add Mark as Read / Mark All as Read
-- [ ] Add deep-link to the related activity
-- [ ] Improve notification content for:
-  - [ ] Activity Verified
-  - [ ] Correction Required
-  - [ ] Activity Rejected
+- [ ] Notification bell + unread counter in the header
+- [ ] Dedicated Notifications page
+- [ ] Mark as Read / Mark All as Read
+- [ ] Deep-link to the related activity
+- [ ] Improve notification content for Verified / Correction Required / Rejected
 
-### Evidence Experience
-- [ ] Add image thumbnail gallery
-- [ ] Add image preview / lightbox
-- [ ] Add PDF preview / open action
-- [ ] Show file name, type and size
+### Evidence gallery & preview
+- [ ] Image thumbnail gallery
+- [ ] Image preview / lightbox
+- [ ] PDF preview / open action
+- [ ] Show file name, type, and size
 - [ ] Improve upload progress and per-file errors
-- [ ] Improve mobile evidence upload
 
----
+### Partner module completion
+- [ ] Partner detail page
+- [ ] Edit partner
+- [ ] Partner activity history
+- [ ] Partner follow-ups / tasks
+- [ ] Partner verification / performance summary
 
-## Priority 2 — Must Finish Before Production
+### ALC Performance page
+- [ ] Dedicated ALC Performance page using verified metrics only
+- [ ] Date filters and useful charts
+- [ ] Verified-data ALC comparison / filtering
 
-### Admin ALC Import
-- [ ] Add Admin CSV Upload page
-- [ ] Validate uploaded CSV
-- [ ] Show valid / invalid / duplicate row counts
-- [ ] Add safe upsert behavior
-- [ ] Show import summary
-- [ ] Add import audit logs
-
-### Partner Module
-- [ ] Add Partner Detail page
-- [ ] Add Edit Partner
-- [ ] Show partner activity history
-- [ ] Show partner follow-ups/tasks
-- [ ] Show partner verification/performance summary
-
-### Performance
-- [ ] Build dedicated ALC Performance page
-- [ ] Use verified metrics only
-- [ ] Add date filters
-- [ ] Add useful charts
-- [ ] Improve Admin performance analytics
-- [ ] Add verified-data ALC comparison/filtering
-
-### Reports
+### Reports & analytics
 - [ ] Improve report filters
-- [ ] Add XLSX export
-- [ ] Add Activities by ALC report
-- [ ] Add Verification Status report
-- [ ] Add Learner Reach report
-- [ ] Add Leads report
-- [ ] Add Admissions report
-- [ ] Add Partner report
-- [ ] Add Challenge Progress report
+- [ ] XLSX exports
+- [ ] Activities by ALC / Verification Status / Learner Reach / Leads / Admissions reports
+- [ ] Partner and Challenge Progress reports
 - [ ] Allow ALC to export its own activity history
+- [ ] Improve Admin performance analytics
 
-### Settings
-- [ ] Make Admin Settings editable
-- [ ] Persist settings in the database
-- [ ] Validate settings
-- [ ] Audit important settings changes
-
-### 30-Day Challenge
+### 30-Day Challenge calculation fixes
 - [ ] Review partnership-count logic
 - [ ] Fix mismatch between current activity types and partnership calculation
 - [ ] Confirm rules for prospects / meetings / pilots / partnerships
-- [ ] Ensure official progress uses verified data
+- [ ] Ensure official progress uses verified data only
 - [ ] Add backend tests for challenge calculations
 
-### Database Migrations
-- [ ] Improve Alembic migration structure
-- [ ] Add explicit migrations for future schema changes
-- [ ] Test upgrade / downgrade
-- [ ] Document migration process
+### Settings persistence
+- [ ] Make Admin Settings editable (currently `GET /admin/settings` only, no mutation)
+- [ ] Persist settings in the database with validation
+- [ ] Audit important settings changes
+
+### Password viewing / encryption (only if the requirement remains)
+- [ ] Keep Argon2 hash for login verification
+- [ ] Store an additional encrypted password value only if Admin password viewing is required
+- [ ] Keep the encryption key server-side only
+- [ ] Admin-only password reveal endpoint, fully audited, never logging the actual password
+
+### Backend, data & infrastructure
+- [ ] Alembic migration cleanup (structure, explicit future migrations, upgrade/downgrade tests, docs)
+- [ ] PostgreSQL integration testing (indexes, pooling, transactions, concurrent submissions, unique activity numbers)
+- [ ] Redis configuration / testing (login rate limiting, failure behavior, production endpoint)
+- [ ] MinIO / S3-compatible storage integration (private access, deletion, key security, large files, production bucket)
+- [ ] Backend security review (authorization, ownership isolation, evidence auth, reset behavior, cookies/CSRF/CORS/headers, rate limiting, secret rotation)
+- [ ] Load / concurrency testing (~380 ALCs active)
+- [ ] Production deployment (backend host + release migration)
 
 ---
 
-## Priority 3 — Production Readiness
+## 4. Remaining Work — Dhruvank
 
-### PostgreSQL
-- [ ] Run integration tests against PostgreSQL
-- [ ] Verify indexes and connection pooling
-- [ ] Verify transaction handling
-- [ ] Verify concurrent submissions
-- [ ] Verify unique activity-number generation
+Owns SBU module refinement and all remaining SBU-related work. **Refine and complete the
+existing SBU implementation on `feature/sbu-operational-portal` — do not rebuild it.**
 
-### Redis
-- [ ] Test Redis-backed login rate limiting
-- [ ] Test Redis failure behavior
-- [ ] Configure production Redis
-- [ ] Verify concurrent login limits
-
-### Evidence / Object Storage
-- [ ] Test MinIO or S3-compatible storage end to end
-- [ ] Confirm private evidence access
-- [ ] Verify evidence deletion
-- [ ] Verify storage-key security
-- [ ] Test large file handling
-- [ ] Configure production storage
-
-### Load / Concurrency Testing
-Target: approximately 380 ALCs potentially active at the same time.
-
-- [ ] Test concurrent logins
-- [ ] Test dashboard requests under load
-- [ ] Test concurrent activity submissions
-- [ ] Test concurrent evidence uploads
-- [ ] Test Admin verification under load
-- [ ] Monitor PostgreSQL connections
-- [ ] Measure API response time
-- [ ] Identify and optimize slow queries
-
-### Security Review
-- [ ] Review Admin authorization
-- [ ] Review ALC ownership isolation
-- [ ] Review evidence authorization
-- [ ] Review password encryption design
-- [ ] Review password reset behavior
-- [ ] Review cookies / CSRF / CORS / secure headers
-- [ ] Review rate limiting
-- [ ] Rotate all development secrets before production
-- [ ] Remove demo credentials
-- [ ] Never expose database/storage secrets to frontend
+- [ ] SBU portal UI refinement
+- [ ] SBU dashboard refinement
+- [ ] Assigned ALC directory refinement
+- [ ] SBU ALC detail pages refinement
+- [ ] ALC ↔ SBU assignment (verify and refine the Admin/SBU flows)
+- [ ] ALC reassignment between SBUs
+- [ ] Admin SBU management UI refinement
+- [ ] SBU activity monitoring
+- [ ] Activity verification (verify) refinement
+- [ ] Request correction refinement
+- [ ] Reject activity refinement
+- [ ] Evidence viewing for assigned ALCs
+- [ ] Partners for assigned ALCs (detail / refinement)
+- [ ] SBU reports (filters, XLSX, beyond basic CSV)
+- [ ] SBU password reset for assigned ALC users (refine UX / confirmation)
+- [ ] Strict cross-SBU backend isolation (harden and re-verify)
+- [ ] SBU responsive / mobile UI
+- [ ] SBU loading / empty / error states (consistent across all pages)
+- [ ] SBU backend / frontend tests (expand coverage, test on real PostgreSQL)
 
 ---
 
-## Priority 4 — Frontend / UX Polish
+## 5. Shared / Final Testing
 
-- [ ] Complete npm migration
-- [ ] Keep `package-lock.json`
-- [ ] Remove pnpm-specific files if no longer used
-- [ ] Run `npm install`
-- [ ] Run `npm run lint`
-- [ ] Run `npm run build`
-- [ ] Test desktop / tablet / mobile layouts
-- [ ] Test mobile activity submission
-- [ ] Test evidence upload from phone
-- [ ] Improve empty, loading and error states
-- [ ] Improve responsive tables
-- [ ] Improve confirmation dialogs
-- [ ] Add consistent password eye controls
-- [ ] Improve accessibility
+End-to-end verification, owned jointly.
 
----
-
-# Suggested Developer Split
-
-Both developers may work on frontend and backend. Assign one owner per feature until it is merged.
-
-## Developer 1
-- [ ] Admin password viewing + encryption backend
-- [ ] Full ALC master import
-- [ ] Admin CSV import
-- [ ] Reports / XLSX
-- [ ] Admin analytics
-- [ ] Challenge calculation fixes
-- [ ] Settings persistence
-- [ ] Alembic migrations
-- [ ] PostgreSQL integration testing
-- [ ] Backend load testing
-- [ ] Backend deployment
-
-## Developer 2
-- [ ] Password eye controls
-- [ ] Notification bell/page/deep-links
-- [ ] Evidence gallery and previews
-- [ ] Partner detail/edit
-- [ ] ALC Performance page
-- [ ] ALC Profile improvements
-- [ ] Responsive/mobile polish
-- [ ] npm migration cleanup
-- [ ] Frontend load behavior
-- [ ] Vercel frontend deployment
-
-## Shared Final Testing
 - [ ] ALC login
+- [ ] SBU login
+- [ ] Admin login
 - [ ] Create activity
 - [ ] Save draft
 - [ ] Upload evidence
 - [ ] Submit activity
-- [ ] Admin receives activity
-- [ ] Admin requests correction
-- [ ] ALC receives notification
+- [ ] Admin / SBU receives the submitted activity
+- [ ] Admin / SBU requests correction
+- [ ] ALC receives the notification
 - [ ] ALC edits and resubmits
-- [ ] Admin verifies activity
-- [ ] ALC receives verification notification
+- [ ] Admin / SBU verifies the activity
+- [ ] ALC receives the verification notification
 - [ ] Verified metrics update
 - [ ] Reports update
 - [ ] Cross-ALC access is blocked
-- [ ] Evidence from another ALC cannot be accessed
-- [ ] Password reset forces ALC password change
-- [ ] Admin password-view action is audited
+- [ ] Cross-SBU access is blocked (one SBU cannot reach another SBU's ALCs/activities/evidence)
+- [ ] Evidence from another ALC / SBU cannot be accessed via direct URL or ID
+- [ ] Password reset forces the ALC password change (Admin and SBU paths)
+- [ ] `must_change_password` lockout works for ALC and SBU in the browser
+- [ ] SBU / common-login branches merge cleanly and pass CI
+- [ ] Alembic `upgrade head` runs correctly against a copy of production data
 
 ---
 
-# Production Acceptance Checklist
+## 6. Production Readiness
+
+- [ ] PostgreSQL integration tests pass
+- [ ] Redis-backed login rate limiting configured and tested
+- [ ] Object-storage (MinIO / S3) integration tested end to end
+- [ ] Private evidence access, deletion, and key security verified
+- [ ] Load / concurrency testing completed (~380 ALCs)
+- [ ] Slow queries identified and optimized
+- [ ] Security review completed
+- [ ] All development secrets rotated before production
+- [ ] Demo credentials removed
+- [ ] Database and evidence backups configured
+- [ ] Monitoring / logging / error reporting configured
+- [ ] Frontend production build passes
+- [ ] Backend production deployment tested
+
+---
+
+## 7. Production Acceptance Checklist
 
 The project should not be considered production-ready until:
 
-- [ ] All real ALCs are imported
-- [ ] Admin and ALC login work with real accounts
+- [ ] All real ALCs are imported (with correct SBU assignment)
+- [ ] Admin, SBU, and ALC login work with real accounts
 - [ ] Full activity workflow passes end to end
 - [ ] Evidence is stored securely
 - [ ] ALC data isolation is verified
-- [ ] Admin verification workflow is stable
+- [ ] SBU data isolation is verified
+- [ ] Admin / SBU verification workflow is stable
 - [ ] Notifications are visible and actionable
-- [ ] Reports work correctly
+- [ ] Reports work correctly (including XLSX exports)
 - [ ] Password handling is secure
 - [ ] PostgreSQL integration tests pass
 - [ ] Object-storage integration tests pass
@@ -272,18 +284,34 @@ The project should not be considered production-ready until:
 - [ ] Database and evidence backups are configured
 - [ ] Frontend production build passes
 - [ ] Backend production deployment is tested
-- [ ] Monitoring/logging is configured
-- [ ] Final Admin + ALC acceptance test passes
+- [ ] Monitoring / logging is configured
+- [ ] Final Admin + SBU + ALC acceptance test passes
 
 ---
 
-# Notes
+## Git / Branch Status
+
+Factual state at the time of writing:
+
+- `main` — base application (FastAPI backend, React frontend, ALC master data). Carries the
+  older **role-selector** login and `/alc` routing. ADMIN and ALC roles only.
+- `feature/common-login` — adds the unified common login (no role selector). Pushed, **not
+  merged** into `main`.
+- `feature/sbu-operational-portal` — builds on the common login; adds the SBU role, SBU
+  model, `sbu_id` relations, unified `/portal`, the full SBU backend, minimal SBU frontend,
+  the SBU Alembic migration, and the SBU tests. Pushed, **not merged** into `main`.
+- `feature/password-ui` — currently at the same commit as `main` (no unique work yet).
+
+The SBU work has been pushed to its feature branch but is **not** merged into `main`.
+
+---
+
+## Notes
 
 - Do not use Google Sheets or Apps Script for the production version.
-- Local development may use local evidence storage.
-- Production evidence should use private object storage.
+- Local development may use local evidence storage; production must use private object storage.
 - Do not count unverified activity metrics as official performance.
-- ALC authorization must always be enforced on the backend.
-- One ALC must never be able to access another ALC's activities, partners, tasks, evidence or reports.
-- Keep audit history for important Admin and ALC actions.
+- ALC and SBU authorization must always be enforced on the backend.
+- One ALC must never access another ALC's data; one SBU must never access another SBU's ALCs.
+- Keep audit history for important Admin, SBU, and ALC actions.
 - Update this file whenever an item is completed.
