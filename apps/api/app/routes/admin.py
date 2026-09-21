@@ -4,7 +4,7 @@ import math
 import uuid
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +27,7 @@ from app.schemas import (
     UserOut,
     UserPatch,
 )
+from app.services import alc_import
 from app.services.activities import admin_activity, review_activity
 from app.services.audit import record_audit
 from app.services.csv_export import safe_csv
@@ -506,6 +507,60 @@ async def update_alc_status(
         "status": alc.status,
         "sbu_id": alc.sbu_id,
     }
+
+
+@router.post("/alcs/import/validate")
+async def validate_alc_import(
+    file: UploadFile = File(...),
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Parse and classify a master file (ALC Code, ALC Name, SBU) without writing anything."""
+    content = await file.read()
+    try:
+        records = alc_import.parse_source(file.filename, content)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    return await alc_import.validate(db, records)
+
+
+@router.post("/alcs/import")
+async def run_alc_import(
+    request: Request,
+    file: UploadFile = File(...),
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Import the ALC master transactionally: create new ALCs and update the name/SBU of
+    existing ones by ALC Code. Never creates login accounts, never touches passwords, and
+    never deletes ALCs absent from the source. Blocked (nothing written) if any row is
+    invalid or references an SBU that does not already exist."""
+    content = await file.read()
+    try:
+        records = alc_import.parse_source(file.filename, content)
+        summary = await alc_import.perform(db, records)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except alc_import.ImportBlocked as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from None
+    summary["by_sbu"] = await alc_import.counts_by_sbu(db)
+    summary["not_in_source"] = await alc_import.orphan_codes(db, records)
+    await record_audit(
+        db,
+        "alc_master_imported",
+        "alc",
+        None,
+        admin,
+        request,
+        {
+            "total": summary["total"],
+            "created": summary["created"],
+            "updated": summary["updated"],
+            "unchanged": summary["unchanged"],
+        },
+    )
+    await db.commit()
+    return summary
 
 
 @router.get("/partners")

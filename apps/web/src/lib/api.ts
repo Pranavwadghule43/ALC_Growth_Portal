@@ -12,7 +12,7 @@ async function request<T>(path: string, options: RequestInit = {}, retry = true)
   const csrf = getCookie('csrf_token')
   if (csrf && options.method && !['GET', 'HEAD'].includes(options.method)) headers.set('X-CSRF-Token', decodeURIComponent(csrf))
   const response = await fetch(`${API_URL}${path}`, { ...options, headers, credentials: 'include' })
-  if (response.status === 401 && retry && path !== '/auth/login' && path !== '/auth/refresh') {
+  if (response.status === 401 && retry && path !== '/auth/login' && path !== '/auth/admin-login' && path !== '/auth/refresh') {
     const refreshed = await fetch(`${API_URL}/auth/refresh`, { method: 'POST', credentials: 'include' })
     if (refreshed.ok) return request<T>(path, options, false)
   }

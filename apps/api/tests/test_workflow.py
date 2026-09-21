@@ -163,6 +163,7 @@ async def test_upload_validation_and_verified_metrics(client, monkeypatch):
 
     monkeypatch.setattr(portal_routes.storage_service, "upload", upload)
     monkeypatch.setattr(portal_routes.storage_service, "get_secure_url", secure_url)
+    monkeypatch.setattr(portal_routes.settings, "storage_backend", "s3")
     await login(client, "00010001", "StrongAlcPassA!", "ALC")
     activity = (await client.post("/api/portal/activities", json=payload)).json()
     bad = await client.post(

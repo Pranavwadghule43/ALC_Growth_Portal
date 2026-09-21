@@ -12,7 +12,7 @@ const adminNav = [
 
 export default function AdminShell({ user }: { user: User }) {
   const [open, setOpen] = useState(false); const navigate = useNavigate(); const client = useQueryClient()
-  async function logout() { await api.post('/auth/logout'); client.clear(); navigate('/login') }
+  async function logout() { await api.post('/auth/logout'); client.clear(); navigate('/admin/login') }
   return <div className="min-h-screen bg-canvas">
     <header className="fixed inset-x-0 top-0 z-40 flex h-16 items-center border-b bg-white px-4 lg:hidden"><button onClick={() => setOpen(true)} aria-label="Open menu"><Menu/></button><div className="ml-3"><b className="text-navy">ALC Growth Portal</b><p className="text-xs text-slate-500">Super Admin</p></div></header>
     {open && <div className="fixed inset-0 z-40 bg-black/40 lg:hidden" onClick={() => setOpen(false)}/>}

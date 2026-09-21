@@ -100,9 +100,10 @@ async def client(session, seeded):
 
 
 async def login(client, identifier, password, portal):
-    response = await client.post(
-        "/api/auth/login", json={"identifier": identifier, "password": password, "portal": portal}
-    )
+    # ADMIN authenticates through the dedicated admin endpoint; SBU and ALC use the
+    # shared portal endpoint. The role is still determined by the backend.
+    path = "/api/auth/admin-login" if portal == "ADMIN" else "/api/auth/login"
+    response = await client.post(path, json={"identifier": identifier, "password": password})
     if response.status_code == 200:
         csrf = client.cookies.get("csrf_token")
         client.headers["X-CSRF-Token"] = csrf
