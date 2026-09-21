@@ -44,8 +44,10 @@ def set_auth_cookies(response: Response, access: str, refresh: str, csrf: str) -
     )
 
 
-async def check_rate_limit(request: Request) -> None:
-    key = f"login:{request.client.host if request.client else 'unknown'}"
+async def check_rate_limit(request: Request, scope: str = "login", limit: int = 10) -> None:
+    # ``scope`` namespaces the counter so admin logins are throttled independently of
+    # portal logins; a stricter ``limit`` can be configured for the admin scope later.
+    key = f"{scope}:{request.client.host if request.client else 'unknown'}"
     try:
         redis = Redis.from_url(
             settings.redis_url,
@@ -57,7 +59,7 @@ async def check_rate_limit(request: Request) -> None:
         if attempts == 1:
             await redis.expire(key, 60)
         await redis.aclose()
-        if attempts > 10:
+        if attempts > limit:
             raise HTTPException(
                 status_code=429, detail="Too many login attempts. Try again shortly."
             )
@@ -68,15 +70,36 @@ async def check_rate_limit(request: Request) -> None:
             raise HTTPException(status_code=503, detail="Login temporarily unavailable") from None
 
 
+async def _establish_session(
+    user: User, request: Request, response: Response, db: AsyncSession, action: str = "login"
+) -> User:
+    """Issue a fresh session for an already-authenticated user: rotate a refresh token,
+    stamp last-login, audit, and set the auth cookies. Shared by portal and admin login."""
+    raw_refresh, refresh_hash = new_refresh_token()
+    db.add(
+        RefreshToken(
+            user_id=user.id,
+            token_hash=refresh_hash,
+            expires_at=datetime.now(timezone.utc) + timedelta(days=settings.refresh_token_days),
+        )
+    )
+    user.last_login_at = datetime.now(timezone.utc)
+    await record_audit(db, action, "user", user.id, user, request)
+    await db.commit()
+    set_auth_cookies(response, create_access_token(user.id), raw_refresh, new_csrf_token())
+    return user
+
+
 @router.post("/login", response_model=UserOut)
 async def login(
     payload: LoginIn, request: Request, response: Response, db: AsyncSession = Depends(get_db)
 ):
-    await check_rate_limit(request)
+    """Operational-portal login for SBU and ALC only. ADMIN accounts are rejected here and
+    must use ``/auth/admin-login``. The role is derived server-side from the identifier: an
+    SBU authenticates with a username/email, an ALC with its unique ALC code. The client
+    never sends a trusted role."""
+    await check_rate_limit(request, scope="login")
     identifier = payload.identifier.lower()
-    # The backend determines the account and role from the identifier alone: an
-    # admin authenticates with a username/email, an ALC with its unique ALC code.
-    # The role is derived server-side; the client never sends a trusted role.
     query = (
         select(User)
         .outerjoin(ALC, User.alc_id == ALC.id)
@@ -84,7 +107,7 @@ async def login(
         .where(
             or_(
                 and_(
-                    User.role.in_((Role.ADMIN, Role.SBU)),
+                    User.role == Role.SBU,
                     or_(
                         func.lower(User.username) == identifier,
                         func.lower(User.email) == identifier,
@@ -107,19 +130,39 @@ async def login(
         )
     if user.alc and user.alc.status.value != "ACTIVE":
         raise HTTPException(status_code=401, detail="Account unavailable")
-    raw_refresh, refresh_hash = new_refresh_token()
-    db.add(
-        RefreshToken(
-            user_id=user.id,
-            token_hash=refresh_hash,
-            expires_at=datetime.now(timezone.utc) + timedelta(days=settings.refresh_token_days),
+    return await _establish_session(user, request, response, db)
+
+
+@router.post("/admin-login", response_model=UserOut)
+async def admin_login(
+    payload: LoginIn, request: Request, response: Response, db: AsyncSession = Depends(get_db)
+):
+    """Administrator login for ADMIN only. SBU and ALC accounts are rejected here and must
+    use ``/auth/login``. Throttled under a separate rate-limit scope so stricter admin
+    limits can be configured independently."""
+    await check_rate_limit(request, scope="admin_login")
+    identifier = payload.identifier.lower()
+    query = (
+        select(User)
+        .options(selectinload(User.alc), selectinload(User.sbu))
+        .where(
+            User.role == Role.ADMIN,
+            or_(
+                func.lower(User.username) == identifier,
+                func.lower(User.email) == identifier,
+            ),
         )
     )
-    user.last_login_at = datetime.now(timezone.utc)
-    await record_audit(db, "login", "user", user.id, user, request)
-    await db.commit()
-    set_auth_cookies(response, create_access_token(user.id), raw_refresh, new_csrf_token())
-    return user
+    user = await db.scalar(query)
+    if (
+        not user
+        or not user.is_active
+        or not verify_password(payload.password, user.password_hash)
+    ):
+        await record_audit(db, "admin_login_failed", "user", request=request)
+        await db.commit()
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    return await _establish_session(user, request, response, db, action="admin_login")
 
 
 @router.post("/refresh", response_model=UserOut)

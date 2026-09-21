@@ -8,6 +8,7 @@ import PortalShell from './layouts/PortalShell'
 import { Loading } from './components/ui'
 
 const Login = lazy(() => import('./pages/Login'))
+const AdminLogin = lazy(() => import('./pages/AdminLogin'))
 // Operational portal (SBU + ALC)
 const AlcDashboard = lazy(() => import('./pages/AlcDashboard'))
 const SbuDashboard = lazy(() => import('./pages/SbuDashboard'))
@@ -51,7 +52,7 @@ function landing(role: Role) {
 function AdminGuard() {
   const location = useLocation(); const { data, isLoading } = useMe()
   if (isLoading) return <div className="p-8"><Loading label="Checking your session" /></div>
-  if (!data) return <Navigate to="/login" replace state={{ from: location }} />
+  if (!data) return <Navigate to="/admin/login" replace state={{ from: location }} />
   if (data.role !== 'ADMIN') return <Navigate to={landing(data.role)} replace />
   if (data.must_change_password && !location.pathname.endsWith('/profile')) return <Navigate to="/admin/profile" replace />
   return <AdminShell user={data} />
@@ -79,6 +80,7 @@ function PortalPartners() { return useOutletContext<User>().role === 'SBU' ? <Sb
 export default function App() {
   return <Suspense fallback={<div className="p-8"><Loading label="Loading workspace" /></div>}><Routes>
     <Route path="/login" element={<Login />} />
+    <Route path="/admin/login" element={<AdminLogin />} />
 
     <Route element={<PortalGuard />}>
       <Route path="/portal" element={<PortalHome />} />
