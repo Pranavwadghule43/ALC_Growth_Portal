@@ -1,66 +1,94 @@
+"""Import or update the real ALC master list (ALC Code, ALC Name, SBU).
+
+Reads a CSV or XLSX master file and upserts ALCs by ALC Code using the shared import
+service. Only ALC Code, ALC Name and SBU are read; any other column (e.g. DCU) is ignored.
+Existing ALCs are updated in place (name / SBU only) and never deleted; login accounts and
+passwords are never touched. Every SBU value must already exist in the sbus table, otherwise
+the import is blocked and the missing SBUs are reported.
+
+Usage:
+    python -m scripts.import_alcs ../../data/ALC-MASTER.csv
+    python -m scripts.import_alcs ../../data/ALC-MASTER.xlsx --validate-only
+"""
 import argparse
 import asyncio
-import csv
-import re
 from pathlib import Path
 
-from sqlalchemy.dialects.postgresql import insert
-
 from app.database import SessionLocal
-from app.enums import AlcStatus
-from app.models import ALC
-
-CODE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,31}$")
+from app.services import alc_import
 
 
-async def import_file(path: Path) -> dict:
-    summary = {"rows": 0, "inserted_or_updated": 0, "invalid": []}
-    seen: set[str] = set()
+async def run(path: Path, validate_only: bool, replace: bool) -> int:
+    content = path.read_bytes()
+    records = alc_import.parse_source(path.name, content)
     async with SessionLocal() as db:
-        with path.open("r", encoding="utf-8-sig", newline="") as handle:
-            reader = csv.DictReader(handle)
-            if not reader.fieldnames or not {"ALC Code", "ALC Name"}.issubset(reader.fieldnames):
-                raise ValueError("CSV must contain 'ALC Code' and 'ALC Name' columns")
-            for line, row in enumerate(reader, start=2):
-                summary["rows"] += 1
-                code = (row.get("ALC Code") or "").strip()
-                name = (row.get("ALC Name") or "").strip()
-                if not CODE_PATTERN.fullmatch(code) or len(name) < 2:
-                    summary["invalid"].append(
-                        {"line": line, "alc_code": code, "reason": "Invalid code or missing name"}
-                    )
-                    continue
-                if code in seen:
-                    summary["invalid"].append(
-                        {"line": line, "alc_code": code, "reason": "Duplicate code in file"}
-                    )
-                    continue
-                seen.add(code)
-                statement = (
-                    insert(ALC)
-                    .values(alc_code=code, alc_name=name, status=AlcStatus.ACTIVE)
-                    .on_conflict_do_update(index_elements=[ALC.alc_code], set_={"alc_name": name})
-                )
-                await db.execute(statement)
-                summary["inserted_or_updated"] += 1
-        await db.commit()
-    return summary
+        report = await alc_import.validate(db, records)
+        counts = report["counts"]
+        print(f"Source rows (non-empty): {counts['total']}")
+        print(
+            f"  new: {counts['new']} | update: {counts['update']} | "
+            f"unchanged: {counts['unchanged']} | invalid: {counts['invalid']}"
+        )
+        if report["duplicates"]:
+            print(f"  duplicate ALC Codes in source: {report['duplicates']}")
+        if report["missing_sbus"]:
+            print(f"  MISSING SBU records (create these first): {report['missing_sbus']}")
+        for row in report["invalid"]:
+            print(f"    row {row['row']} {row['alc_code']!r}: {row['reason']}")
+
+        if validate_only:
+            print("Validation only: no changes written.")
+            return 1 if counts["invalid"] else 0
+
+        if counts["invalid"]:
+            print("Import blocked: fix the invalid rows above. No changes written.")
+            return 1
+
+        if replace:
+            # Hard reset the ALC domain first, then load the master fresh. Validation above
+            # already confirmed every SBU exists, so the reset will not orphan the reload.
+            removed = await alc_import.hard_reset_alc_domain(db)
+            print("Hard reset (ALC domain wiped; ADMIN/SBU accounts and SBUs kept):")
+            for table, n in removed.items():
+                if n:
+                    print(f"  removed {n} {table}")
+
+        summary = await alc_import.perform(db, records)
+        by_sbu = await alc_import.counts_by_sbu(db)
+        orphans = await alc_import.orphan_codes(db, records)
+        print(
+            "Imported: "
+            f"created={summary['created']} updated={summary['updated']} "
+            f"unchanged={summary['unchanged']} skipped={summary['skipped']} "
+            f"failed={summary['failed']}"
+        )
+        print("ALC counts by SBU:")
+        for row in by_sbu:
+            print(f"  {row['sbu'] or '(unassigned)'}: {row['alcs']}")
+        if orphans:
+            print(f"Database ALCs NOT in this master (kept, not deleted): {orphans}")
+    return 0
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Import or update the ALC master list")
     parser.add_argument("path", type=Path)
-    args = parser.parse_args()
-    summary = asyncio.run(import_file(args.path))
-    print(
-        "Rows: {rows} | imported/updated: {imported_or_updated} | invalid: {invalid}".format(
-            rows=summary["rows"],
-            imported_or_updated=summary["inserted_or_updated"],
-            invalid=len(summary["invalid"]),
-        )
+    parser.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="Parse and classify the source without writing to the database.",
     )
-    for issue in summary["invalid"]:
-        print(f"Line {issue['line']}: {issue['alc_code']!r} - {issue['reason']}")
+    parser.add_argument(
+        "--replace",
+        action="store_true",
+        help=(
+            "DESTRUCTIVE hard reset: wipe all ALC-domain data (ALCs, ALC login accounts, "
+            "activities, evidence, partners, tasks, challenge progress) and load the master "
+            "fresh. ADMIN/SBU accounts and the SBU master are kept."
+        ),
+    )
+    args = parser.parse_args()
+    raise SystemExit(asyncio.run(run(args.path, args.validate_only, args.replace)))
 
 
 if __name__ == "__main__":
