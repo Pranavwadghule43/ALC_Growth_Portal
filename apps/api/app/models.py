@@ -132,8 +132,14 @@ class Activity(Base, TimestampMixin):
     )
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    verified_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
-    created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    verified_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    # Nullable so deleting a login account detaches authorship while the activity, evidence,
+    # reviews and reports are preserved. Never deleted when the creating user is removed.
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
     partner: Mapped[Partner | None] = relationship()
     evidence: Mapped[list["ActivityEvidence"]] = relationship(
         back_populates="activity", cascade="all, delete-orphan", lazy="selectin"
@@ -162,7 +168,9 @@ class ActivityEvidence(Base):
     original_filename: Mapped[str] = mapped_column(String(255))
     mime_type: Mapped[str] = mapped_column(String(100))
     file_size: Mapped[int] = mapped_column(Integer)
-    uploaded_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     activity: Mapped[Activity] = relationship(back_populates="evidence")
@@ -174,7 +182,9 @@ class ActivityReview(Base):
     activity_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("activities.id", ondelete="CASCADE"), index=True
     )
-    reviewer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    reviewer_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
     previous_status: Mapped[ActivityStatus] = mapped_column(Enum(ActivityStatus, native_enum=False))
     new_status: Mapped[ActivityStatus] = mapped_column(Enum(ActivityStatus, native_enum=False))
     action: Mapped[ReviewAction] = mapped_column(Enum(ReviewAction, native_enum=False))
@@ -191,7 +201,9 @@ class ActivityRevision(Base):
         ForeignKey("activities.id", ondelete="CASCADE"), index=True
     )
     revision_number: Mapped[int] = mapped_column(Integer)
-    changed_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    changed_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
     change_summary: Mapped[str] = mapped_column(Text)
     snapshot: Mapped[dict[str, Any]] = mapped_column(SAJSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -227,7 +239,9 @@ class ChallengeProgress(Base, TimestampMixin):
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), index=True)
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
     actor_role: Mapped[str | None] = mapped_column(String(20))
     alc_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("alcs.id"), index=True)
     action: Mapped[str] = mapped_column(String(100), index=True)

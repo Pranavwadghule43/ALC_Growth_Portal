@@ -6,7 +6,7 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import and_, case, desc, func, or_, select
+from sqlalchemy import and_, case, delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -15,7 +15,19 @@ from app.config import settings
 from app.database import get_db
 from app.dependencies import pagination, require_admin, require_csrf
 from app.enums import ActivityStatus, ReviewAction, Role
-from app.models import ALC, SBU, Activity, ActivityEvidence, AuditLog, Partner, User
+from app.models import (
+    ALC,
+    SBU,
+    Activity,
+    ActivityEvidence,
+    ActivityReview,
+    ActivityRevision,
+    AuditLog,
+    Notification,
+    Partner,
+    RefreshToken,
+    User,
+)
 from app.schemas import (
     ActivityOut,
     AlcStatusPatch,
@@ -764,6 +776,78 @@ async def update_user(
         .options(selectinload(User.alc), selectinload(User.sbu))
         .where(User.id == user.id)
     )
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: uuid.UUID,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Permanently delete an ALC/SBU login account only. The ALC/SBU master record and all
+    historical activities, evidence, reviews, partners, tasks, challenge history and reports
+    are preserved (authorship references are detached, not deleted). ADMIN accounts and the
+    admin's own account can never be deleted."""
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.role == Role.ADMIN:
+        raise HTTPException(status_code=403, detail="Administrator accounts cannot be deleted")
+    if user.id == admin.id:
+        raise HTTPException(status_code=403, detail="You cannot delete your own account")
+
+    deleted_role, deleted_alc_id, deleted_sbu_id = user.role, user.alc_id, user.sbu_id
+
+    # Session cleanup: revoke every refresh token and drop notifications so the account
+    # immediately loses access and an old refresh token can never be reused.
+    await db.execute(delete(RefreshToken).where(RefreshToken.user_id == user_id))
+    await db.execute(delete(Notification).where(Notification.user_id == user_id))
+
+    # Detach authorship from historical rows so they survive (never cascade-delete business
+    # data). Works on PostgreSQL and SQLite regardless of FK enforcement.
+    await db.execute(
+        update(Activity).where(Activity.created_by == user_id).values(created_by=None)
+    )
+    await db.execute(
+        update(Activity).where(Activity.verified_by == user_id).values(verified_by=None)
+    )
+    await db.execute(
+        update(ActivityEvidence)
+        .where(ActivityEvidence.uploaded_by == user_id)
+        .values(uploaded_by=None)
+    )
+    await db.execute(
+        update(ActivityReview).where(ActivityReview.reviewer_id == user_id).values(reviewer_id=None)
+    )
+    await db.execute(
+        update(ActivityRevision)
+        .where(ActivityRevision.changed_by == user_id)
+        .values(changed_by=None)
+    )
+    await db.execute(
+        update(AuditLog).where(AuditLog.actor_user_id == user_id).values(actor_user_id=None)
+    )
+
+    # Audit the deletion (acting admin, deleted user/role, associated ALC/SBU). Never records
+    # passwords, hashes or tokens.
+    await record_audit(
+        db,
+        "USER_ACCOUNT_DELETED",
+        "user",
+        user_id,
+        admin,
+        request,
+        {
+            "deleted_user_id": str(user_id),
+            "deleted_role": deleted_role.value,
+            "alc_id": str(deleted_alc_id) if deleted_alc_id else None,
+            "sbu_id": str(deleted_sbu_id) if deleted_sbu_id else None,
+        },
+    )
+    await db.delete(user)
+    await db.commit()
+    return {"message": "User account deleted", "deleted_user_id": str(user_id)}
 
 
 @router.get("/sbus")

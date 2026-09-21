@@ -13,6 +13,9 @@ export default function AdminUsers() {
   const [alcSearch, setAlcSearch] = useState('')
   const [resetUser, setResetUser] = useState<User | null>(null)
   const [resetPassword, setResetPassword] = useState('')
+  const [deleteUser, setDeleteUser] = useState<User | null>(null)
+  const [deleteError, setDeleteError] = useState('')
+  const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState('')
   const users = useQuery({ queryKey: ['users'], queryFn: () => api.get<User[]>('/admin/users') })
   const alcs = useQuery({ queryKey: ['alcs-options', alcSearch], queryFn: () => api.get<Page<Alc>>(`/admin/alcs?page=1&page_size=100&search=${encodeURIComponent(alcSearch)}`) })
@@ -37,6 +40,14 @@ export default function AdminUsers() {
       setResetUser(null); setResetPassword(''); client.invalidateQueries({ queryKey: ['users'] })
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Password reset failed') }
   }
+  async function confirmDelete() {
+    if (!deleteUser) return; setDeleteError(''); setDeleting(true)
+    try {
+      await api.delete(`/admin/users/${deleteUser.id}`)
+      setDeleteUser(null); client.invalidateQueries({ queryKey: ['users'] })
+    } catch (caught) { setDeleteError(caught instanceof Error ? caught.message : 'Unable to delete account') }
+    finally { setDeleting(false) }
+  }
   return <>
     <PageHeader title="User Management" description="Create accounts, reset passwords, and control access." actions={<button className="btn-primary" onClick={() => setOpen(!open)}>{open ? 'Close' : 'Create user'}</button>} />
     {open && <form onSubmit={save} className="panel mb-5 grid gap-4 p-5 md:grid-cols-2">
@@ -50,6 +61,18 @@ export default function AdminUsers() {
       <div className="md:col-span-2"><button className="btn-primary">Create user</button></div>
     </form>}
     {resetUser && <form onSubmit={applyReset} className="panel mb-5 max-w-xl p-5"><h2 className="font-bold text-navy">Reset password for {resetUser.username}</h2><p className="mt-1 text-sm text-slate-500">The user will be required to change this temporary password at next login.</p><label className="mt-4 block">New temporary password</label><input className="mt-1" type="password" autoComplete="new-password" required minLength={12} value={resetPassword} onChange={e => setResetPassword(e.target.value)} />{error && <p className="mt-2 text-sm text-red-700">{error}</p>}<div className="mt-4 flex gap-2"><button className="btn-primary">Reset password</button><button type="button" className="btn-secondary" onClick={() => { setResetUser(null); setResetPassword('') }}>Cancel</button></div></form>}
-    {users.isLoading ? <Loading /> : users.error ? <ErrorState error={users.error} /> : <div className="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Assignment</th><th>Status</th><th>Password</th><th>Actions</th></tr></thead><tbody>{users.data?.map(user => <tr key={user.id}><td><b>{user.username}</b><p className="text-xs text-slate-500">{user.email}</p></td><td>{user.role === 'ADMIN' ? 'Super Admin' : user.role}</td><td>{user.alc ? `${user.alc.alc_code} · ${user.alc.alc_name}` : user.sbu ? `${user.sbu.code} · ${user.sbu.name}` : '—'}</td><td><Badge status={user.is_active ? 'ACTIVE' : 'INACTIVE'} /></td><td>{user.must_change_password ? 'Change required' : 'Current'}</td><td><div className="flex flex-wrap gap-2"><button className="btn-secondary" onClick={() => toggle(user)}>{user.is_active ? 'Deactivate' : 'Activate'}</button><button className="btn-secondary" onClick={() => { setResetUser(user); setError('') }}>Reset password</button></div></td></tr>)}</tbody></table></div>}
+    {users.isLoading ? <Loading /> : users.error ? <ErrorState error={users.error} /> : <div className="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Assignment</th><th>Status</th><th>Password</th><th>Actions</th></tr></thead><tbody>{users.data?.map(user => <tr key={user.id}><td><b>{user.username}</b><p className="text-xs text-slate-500">{user.email}</p></td><td>{user.role === 'ADMIN' ? 'Super Admin' : user.role}</td><td>{user.alc ? `${user.alc.alc_code} · ${user.alc.alc_name}` : user.sbu ? `${user.sbu.code} · ${user.sbu.name}` : '—'}</td><td><Badge status={user.is_active ? 'ACTIVE' : 'INACTIVE'} /></td><td>{user.must_change_password ? 'Change required' : 'Current'}</td><td><div className="flex flex-wrap gap-2"><button className="btn-secondary" onClick={() => toggle(user)}>{user.is_active ? 'Deactivate' : 'Activate'}</button><button className="btn-secondary" onClick={() => { setResetUser(user); setError('') }}>Reset password</button>{user.role !== 'ADMIN' && <button className="btn-danger" onClick={() => { setDeleteUser(user); setDeleteError('') }}>Delete Account</button>}</div></td></tr>)}</tbody></table></div>}
+    {deleteUser && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-labelledby="delete-title">
+      <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+        <h2 id="delete-title" className="text-lg font-bold text-navy">Delete User Account</h2>
+        <p className="mt-1 text-sm text-slate-500">{deleteUser.username}{deleteUser.alc ? ` · ${deleteUser.alc.alc_code} · ${deleteUser.alc.alc_name}` : deleteUser.sbu ? ` · ${deleteUser.sbu.code}` : ''}</p>
+        <p className="mt-4 text-sm text-slate-700">This will permanently delete this login account. The associated ALC/SBU master record and all historical activities, partners, evidence and reports will remain unchanged.</p>
+        {deleteError && <p className="mt-3 text-sm text-red-700">{deleteError}</p>}
+        <div className="mt-6 flex justify-end gap-2">
+          <button type="button" className="btn-secondary" disabled={deleting} onClick={() => setDeleteUser(null)}>Cancel</button>
+          <button type="button" className="btn-danger" disabled={deleting} onClick={confirmDelete}>{deleting ? 'Deleting…' : 'Delete Account'}</button>
+        </div>
+      </div>
+    </div>}
   </>
 }
