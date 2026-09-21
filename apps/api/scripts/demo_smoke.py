@@ -51,20 +51,20 @@ async def main() -> None:
             "description": "Demo collaboration meeting with evidence and an admin review cycle.",
             "outcome": "Pilot discussion agreed",
         }
-        created = await alc.post("/api/alc/activities", json=payload)
+        created = await alc.post("/api/portal/activities", json=payload)
         created.raise_for_status()
         activity = created.json()
         activity_id = activity["id"]
-        upload = await alc.post(f"/api/alc/activities/{activity_id}/evidence", files={"files": ("demo-proof.pdf", sample_pdf(), "application/pdf")})
+        upload = await alc.post(f"/api/portal/activities/{activity_id}/evidence", files={"files": ("demo-proof.pdf", sample_pdf(), "application/pdf")})
         upload.raise_for_status()
         evidence_id = upload.json()[0]["id"]
-        own_access = await alc.get(f"/api/alc/evidence/{evidence_id}/access")
+        own_access = await alc.get(f"/api/portal/evidence/{evidence_id}/access")
         own_access.raise_for_status()
         content = await alc.get(own_access.json()["url"])
         assert content.status_code == 200 and content.content.startswith(b"%PDF-")
-        assert (await other.get(f"/api/alc/activities/{activity_id}")).status_code == 404
-        assert (await other.get(f"/api/alc/evidence/{evidence_id}/content")).status_code == 404
-        submitted = await alc.post(f"/api/alc/activities/{activity_id}/submit")
+        assert (await other.get(f"/api/portal/activities/{activity_id}")).status_code == 404
+        assert (await other.get(f"/api/portal/evidence/{evidence_id}/content")).status_code == 404
+        submitted = await alc.post(f"/api/portal/activities/{activity_id}/submit")
         submitted.raise_for_status()
         assert submitted.json()["status"] == "SUBMITTED"
         queue = await admin.get("/api/admin/verification-queue?queue_only=true")
@@ -73,14 +73,14 @@ async def main() -> None:
         correction = await admin.post(f"/api/admin/activities/{activity_id}/request-correction", json={"remark": "Please clarify the pilot outcome"})
         correction.raise_for_status()
         assert correction.json()["status"] == "CORRECTION_REQUIRED"
-        edited = await alc.patch(f"/api/alc/activities/{activity_id}", json={**payload, "outcome": "Pilot scheduled and confirmed"})
+        edited = await alc.patch(f"/api/portal/activities/{activity_id}", json={**payload, "outcome": "Pilot scheduled and confirmed"})
         edited.raise_for_status()
-        resubmitted = await alc.post(f"/api/alc/activities/{activity_id}/submit")
+        resubmitted = await alc.post(f"/api/portal/activities/{activity_id}/submit")
         resubmitted.raise_for_status()
         assert resubmitted.json()["status"] == "RESUBMITTED"
         verified = await admin.post(f"/api/admin/activities/{activity_id}/verify", json={"remark": "Evidence accepted"})
         verified.raise_for_status()
-        dashboard = await alc.get("/api/alc/dashboard")
+        dashboard = await alc.get("/api/portal/dashboard")
         dashboard.raise_for_status()
         assert dashboard.json()["learners"] >= 24
         print(f"Live demo verified: {activity['activity_number']} with private PDF, correction, resubmission, and verified metrics")

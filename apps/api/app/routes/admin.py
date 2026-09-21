@@ -15,11 +15,14 @@ from app.config import settings
 from app.database import get_db
 from app.dependencies import pagination, require_admin, require_csrf
 from app.enums import ActivityStatus, ReviewAction, Role
-from app.models import ALC, Activity, ActivityEvidence, AuditLog, Partner, User
+from app.models import ALC, SBU, Activity, ActivityEvidence, AuditLog, Partner, User
 from app.schemas import (
     ActivityOut,
     AlcStatusPatch,
     ReviewDecisionIn,
+    SbuIn,
+    SbuOut,
+    SbuPatch,
     UserCreate,
     UserOut,
     UserPatch,
@@ -480,12 +483,29 @@ async def update_alc_status(
     alc = await db.get(ALC, alc_id)
     if not alc:
         raise HTTPException(status_code=404, detail="ALC not found")
-    alc.status = payload.status
-    await record_audit(
-        db, "alc_status_changed", "alc", alc.id, admin, request, {"status": payload.status.value}
-    )
+    provided = payload.model_fields_set
+    changes: dict = {}
+    if "status" in provided and payload.status is not None:
+        alc.status = payload.status
+        changes["status"] = payload.status.value
+    if "sbu_id" in provided:
+        if payload.sbu_id is not None and not await db.scalar(
+            select(SBU.id).where(SBU.id == payload.sbu_id)
+        ):
+            raise HTTPException(status_code=422, detail="Invalid SBU")
+        alc.sbu_id = payload.sbu_id
+        changes["sbu_id"] = str(payload.sbu_id) if payload.sbu_id else None
+    if not changes:
+        raise HTTPException(status_code=422, detail="No changes supplied")
+    await record_audit(db, "alc_updated", "alc", alc.id, admin, request, changes)
     await db.commit()
-    return {"id": alc.id, "alc_code": alc.alc_code, "alc_name": alc.alc_name, "status": alc.status}
+    return {
+        "id": alc.id,
+        "alc_code": alc.alc_code,
+        "alc_name": alc.alc_name,
+        "status": alc.status,
+        "sbu_id": alc.sbu_id,
+    }
 
 
 @router.get("/partners")
@@ -608,7 +628,11 @@ async def challenge_progress(
 @router.get("/users", response_model=list[UserOut])
 async def users(_: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     return (
-        await db.scalars(select(User).options(selectinload(User.alc)).order_by(User.username))
+        await db.scalars(
+            select(User)
+            .options(selectinload(User.alc), selectinload(User.sbu))
+            .order_by(User.username)
+        )
     ).all()
 
 
@@ -619,17 +643,28 @@ async def create_user(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    if payload.role == Role.ALC and not payload.alc_id:
-        raise HTTPException(status_code=422, detail="ALC is required")
-    if payload.role == Role.ADMIN and payload.alc_id:
-        raise HTTPException(status_code=422, detail="Admin cannot belong to an ALC")
+    if payload.role == Role.ALC:
+        if not payload.alc_id:
+            raise HTTPException(status_code=422, detail="ALC is required")
+        if payload.sbu_id:
+            raise HTTPException(status_code=422, detail="ALC user cannot belong to an SBU")
+    elif payload.role == Role.SBU:
+        if not payload.sbu_id:
+            raise HTTPException(status_code=422, detail="SBU is required")
+        if payload.alc_id:
+            raise HTTPException(status_code=422, detail="SBU user cannot belong to an ALC")
+        if not await db.scalar(select(SBU.id).where(SBU.id == payload.sbu_id)):
+            raise HTTPException(status_code=422, detail="Invalid SBU")
+    elif payload.role == Role.ADMIN and (payload.alc_id or payload.sbu_id):
+        raise HTTPException(status_code=422, detail="Admin cannot belong to an ALC or SBU")
     if await db.scalar(select(User.id).where(User.username == payload.username)):
         raise HTTPException(status_code=409, detail="Username already exists")
     user = User(
         username=payload.username,
         email=str(payload.email) if payload.email else None,
         role=payload.role,
-        alc_id=payload.alc_id,
+        alc_id=payload.alc_id if payload.role == Role.ALC else None,
+        sbu_id=payload.sbu_id if payload.role == Role.SBU else None,
         password_hash=hash_password(payload.password),
         must_change_password=payload.must_change_password,
     )
@@ -637,7 +672,11 @@ async def create_user(
     await db.flush()
     await record_audit(db, "user_created", "user", user.id, admin, request)
     await db.commit()
-    return await db.scalar(select(User).options(selectinload(User.alc)).where(User.id == user.id))
+    return await db.scalar(
+        select(User)
+        .options(selectinload(User.alc), selectinload(User.sbu))
+        .where(User.id == user.id)
+    )
 
 
 @router.patch("/users/{user_id}", response_model=UserOut)
@@ -665,7 +704,120 @@ async def update_user(
         changes["password_reset"] = True
     await record_audit(db, "user_updated", "user", user.id, admin, request, changes)
     await db.commit()
-    return await db.scalar(select(User).options(selectinload(User.alc)).where(User.id == user.id))
+    return await db.scalar(
+        select(User)
+        .options(selectinload(User.alc), selectinload(User.sbu))
+        .where(User.id == user.id)
+    )
+
+
+@router.get("/sbus")
+async def list_sbus(
+    page_data: tuple[int, int] = Depends(pagination),
+    search: str | None = None,
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    page, page_size = page_data
+    filters = []
+    if search:
+        filters.append(or_(SBU.code.ilike(f"%{search}%"), SBU.name.ilike(f"%{search}%")))
+    total = await db.scalar(select(func.count(SBU.id)).where(*filters)) or 0
+    rows = (
+        (
+            await db.execute(
+                select(
+                    SBU.id,
+                    SBU.code,
+                    SBU.name,
+                    SBU.is_active,
+                    func.count(ALC.id).label("assigned_alcs"),
+                )
+                .outerjoin(ALC, ALC.sbu_id == SBU.id)
+                .where(*filters)
+                .group_by(SBU.id)
+                .order_by(SBU.code)
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return {
+        "items": rows,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "pages": math.ceil(total / page_size) if total else 0,
+    }
+
+
+@router.post("/sbus", response_model=SbuOut, status_code=201)
+async def create_sbu(
+    payload: SbuIn,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if await db.scalar(select(SBU.id).where(func.lower(SBU.code) == payload.code.lower())):
+        raise HTTPException(status_code=409, detail="SBU code already exists")
+    sbu = SBU(code=payload.code, name=payload.name, is_active=payload.is_active)
+    db.add(sbu)
+    await db.flush()
+    await record_audit(db, "sbu_created", "sbu", sbu.id, admin, request, {"code": sbu.code})
+    await db.commit()
+    await db.refresh(sbu)
+    return sbu
+
+
+@router.get("/sbus/{sbu_id}")
+async def sbu_detail(
+    sbu_id: uuid.UUID, _: User = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    sbu = await db.get(SBU, sbu_id)
+    if not sbu:
+        raise HTTPException(status_code=404, detail="SBU not found")
+    alcs_rows = (
+        await db.execute(
+            select(ALC.id, ALC.alc_code, ALC.alc_name, ALC.status)
+            .where(ALC.sbu_id == sbu_id)
+            .order_by(ALC.alc_code)
+        )
+    ).mappings().all()
+    users_rows = (
+        await db.scalars(
+            select(User).where(User.sbu_id == sbu_id, User.role == Role.SBU).order_by(User.username)
+        )
+    ).all()
+    return {
+        "sbu": SbuOut.model_validate(sbu),
+        "alcs": alcs_rows,
+        "users": [UserOut.model_validate(u) for u in users_rows],
+    }
+
+
+@router.patch("/sbus/{sbu_id}", response_model=SbuOut)
+async def update_sbu(
+    sbu_id: uuid.UUID,
+    payload: SbuPatch,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    sbu = await db.get(SBU, sbu_id)
+    if not sbu:
+        raise HTTPException(status_code=404, detail="SBU not found")
+    if payload.name is not None:
+        sbu.name = payload.name
+    if payload.is_active is not None:
+        sbu.is_active = payload.is_active
+    await record_audit(
+        db, "sbu_updated", "sbu", sbu.id, admin, request, payload.model_dump(exclude_none=True)
+    )
+    await db.commit()
+    await db.refresh(sbu)
+    return sbu
 
 
 @router.get("/audit-logs")

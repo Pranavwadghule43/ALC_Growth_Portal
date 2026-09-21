@@ -11,11 +11,20 @@ class ORMModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class SbuBrief(ORMModel):
+    id: uuid.UUID
+    code: str
+    name: str
+    is_active: bool
+
+
 class AlcBrief(ORMModel):
     id: uuid.UUID
     alc_code: str
     alc_name: str
     status: AlcStatus
+    sbu_id: uuid.UUID | None = None
+    sbu: SbuBrief | None = None
 
 
 class UserOut(ORMModel):
@@ -24,7 +33,9 @@ class UserOut(ORMModel):
     email: EmailStr | None
     role: Role
     alc_id: uuid.UUID | None
+    sbu_id: uuid.UUID | None = None
     alc: AlcBrief | None = None
+    sbu: SbuBrief | None = None
     is_active: bool
     must_change_password: bool
 
@@ -155,6 +166,7 @@ class UserCreate(BaseModel):
     email: EmailStr | None = None
     role: Role
     alc_id: uuid.UUID | None = None
+    sbu_id: uuid.UUID | None = None
     password: str = Field(min_length=12, max_length=256)
     must_change_password: bool = True
 
@@ -166,4 +178,29 @@ class UserPatch(BaseModel):
 
 
 class AlcStatusPatch(BaseModel):
-    status: AlcStatus
+    status: AlcStatus | None = None
+    sbu_id: uuid.UUID | None = None
+
+
+class SbuIn(BaseModel):
+    code: str = Field(min_length=1, max_length=32)
+    name: str = Field(min_length=2, max_length=255)
+    is_active: bool = True
+
+
+class SbuPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=255)
+    is_active: bool | None = None
+
+
+class SbuOut(ORMModel):
+    id: uuid.UUID
+    code: str
+    name: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class PasswordResetIn(BaseModel):
+    password: str = Field(min_length=12, max_length=256)

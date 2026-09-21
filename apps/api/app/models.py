@@ -35,14 +35,28 @@ class TimestampMixin:
     )
 
 
+class SBU(Base, TimestampMixin):
+    __tablename__ = "sbus"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    alcs: Mapped[list["ALC"]] = relationship(back_populates="sbu")
+    users: Mapped[list["User"]] = relationship(back_populates="sbu")
+
+
 class ALC(Base, TimestampMixin):
     __tablename__ = "alcs"
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     alc_code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     alc_name: Mapped[str] = mapped_column(String(255))
+    sbu_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("sbus.id"), nullable=True, index=True
+    )
     status: Mapped[AlcStatus] = mapped_column(
         Enum(AlcStatus, native_enum=False), default=AlcStatus.ACTIVE, index=True
     )
+    sbu: Mapped["SBU | None"] = relationship(back_populates="alcs")
     users: Mapped[list["User"]] = relationship(back_populates="alc")
 
 
@@ -56,10 +70,14 @@ class User(Base, TimestampMixin):
     alc_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("alcs.id"), nullable=True, index=True
     )
+    sbu_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("sbus.id"), nullable=True, index=True
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     alc: Mapped[ALC | None] = relationship(back_populates="users")
+    sbu: Mapped["SBU | None"] = relationship(back_populates="users")
 
 
 class RefreshToken(Base):

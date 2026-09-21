@@ -1,7 +1,8 @@
-export type Role = 'ADMIN' | 'ALC'
+export type Role = 'ADMIN' | 'SBU' | 'ALC'
 export type Status = 'DRAFT' | 'SUBMITTED' | 'UNDER_REVIEW' | 'CORRECTION_REQUIRED' | 'RESUBMITTED' | 'VERIFIED' | 'REJECTED'
-export interface Alc { id: string; alc_code: string; alc_name: string; status: string }
-export interface User { id: string; username: string; email?: string; role: Role; alc_id?: string; alc?: Alc; is_active: boolean; must_change_password: boolean }
+export interface Sbu { id: string; code: string; name: string; is_active: boolean }
+export interface Alc { id: string; alc_code: string; alc_name: string; status: string; sbu_id?: string; sbu?: Sbu }
+export interface User { id: string; username: string; email?: string; role: Role; alc_id?: string; sbu_id?: string; alc?: Alc; sbu?: Sbu; is_active: boolean; must_change_password: boolean }
 export interface Evidence { id: string; original_filename: string; mime_type: string; file_size: number; uploaded_at: string }
 export interface Review { id: string; previous_status: Status; new_status: Status; action: string; remark?: string; reviewed_at: string }
 export interface Partner { id: string; alc_id: string; partner_name: string; partner_type: string; ecosystem: string; contact_person?: string; phone?: string; email?: string; location?: string; status: string; notes?: string }

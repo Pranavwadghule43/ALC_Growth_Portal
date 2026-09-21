@@ -24,7 +24,11 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired"
         ) from None
-    user = await db.scalar(select(User).options(selectinload(User.alc)).where(User.id == user_id))
+    user = await db.scalar(
+        select(User)
+        .options(selectinload(User.alc), selectinload(User.sbu))
+        .where(User.id == user_id)
+    )
     if not user or not user.is_active or (user.alc and user.alc.status.value != "ACTIVE"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account unavailable")
     return user
@@ -35,6 +39,27 @@ async def require_admin(user: User = Depends(get_current_user)) -> User:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Administrator access required"
         )
+    if user.must_change_password:
+        raise HTTPException(status_code=403, detail="Password change required")
+    return user
+
+
+async def require_portal_user(user: User = Depends(get_current_user)) -> User:
+    """Allow only operational-portal roles (SBU or ALC), never ADMIN."""
+    if user.role == Role.ALC and user.alc_id is not None:
+        pass
+    elif user.role == Role.SBU and user.sbu_id is not None:
+        pass
+    else:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Portal access required")
+    if user.must_change_password:
+        raise HTTPException(status_code=403, detail="Password change required")
+    return user
+
+
+async def require_sbu(user: User = Depends(get_current_user)) -> User:
+    if user.role != Role.SBU or user.sbu_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="SBU access required")
     if user.must_change_password:
         raise HTTPException(status_code=403, detail="Password change required")
     return user

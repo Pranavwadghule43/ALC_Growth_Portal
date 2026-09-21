@@ -20,8 +20,8 @@ const ecosystems=['School','College','Government','Business','Industry','NGO','C
 
 export default function ActivityEditor(){
   const {id}=useParams(); const navigate=useNavigate(); const client=useQueryClient(); const [draftId,setDraftId]=useState<string>(); const isNew=!id&&!draftId; const [files,setFiles]=useState<File[]>([]); const [progress,setProgress]=useState<Record<string,number>>({}); const [uploadErrors,setUploadErrors]=useState<Record<string,string>>({}); const [message,setMessage]=useState(''); const [formError,setFormError]=useState(''); const [busy,setBusy]=useState(false)
-  const activityQuery=useQuery({queryKey:['activity',id],queryFn:()=>api.get<Activity>(`/alc/activities/${id}`),enabled:!!id})
-  const partnersQuery=useQuery({queryKey:['partners'],queryFn:()=>api.get<Partner[]>('/alc/partners')})
+  const activityQuery=useQuery({queryKey:['activity',id],queryFn:()=>api.get<Activity>(`/portal/activities/${id}`),enabled:!!id})
+  const partnersQuery=useQuery({queryKey:['partners'],queryFn:()=>api.get<Partner[]>('/portal/partners')})
   const {register,handleSubmit,reset,formState:{errors}}=useForm<FormValues>({resolver:zodResolver(schema),defaultValues:{learners_reached:0,leads_generated:0,admissions_generated:0,activity_date:new Date().toISOString().slice(0,10)}})
   useEffect(()=>{if(activityQuery.data){const a=activityQuery.data;reset({activity_type:a.activity_type,partner_id:a.partner_id??'',ecosystem:a.ecosystem,collaboration_type:a.collaboration_type??'',activity_date:a.activity_date,location:a.location,learners_reached:a.learners_reached,leads_generated:a.leads_generated,admissions_generated:a.admissions_generated,description:a.description,outcome:a.outcome})}},[activityQuery.data,reset])
   const activity=activityQuery.data; const editable=!id||activity?.status==='DRAFT'||activity?.status==='CORRECTION_REQUIRED'
@@ -29,26 +29,26 @@ export default function ActivityEditor(){
     setBusy(true);setFormError('');setMessage('');setUploadErrors({})
     try{
       const payload={...values,partner_id:values.partner_id||null,collaboration_type:values.collaboration_type||null}
-      let saved=isNew?await api.post<Activity>('/alc/activities',payload):await api.patch<Activity>(`/alc/activities/${id??draftId}`,payload)
+      let saved=isNew?await api.post<Activity>('/portal/activities',payload):await api.patch<Activity>(`/portal/activities/${id??draftId}`,payload)
       if(isNew)setDraftId(saved.id)
       const failed:File[]=[]
       for(const file of files){
-        try{await api.uploadEvidence(`/alc/activities/${saved.id}/evidence`,file,pct=>setProgress(current=>({...current,[file.name]:pct})))}
+        try{await api.uploadEvidence(`/portal/activities/${saved.id}/evidence`,file,pct=>setProgress(current=>({...current,[file.name]:pct})))}
         catch(e){failed.push(file);setUploadErrors(current=>({...current,[file.name]:e instanceof Error?e.message:'Upload failed'}))}
       }
       setFiles(failed)
       if(!failed.length)setProgress({})
       await client.invalidateQueries({queryKey:['activities']})
       if(failed.length){setFormError('The draft was saved, but some evidence uploads failed. Retry the remaining files before submitting.');return}
-      if(submit){saved=await api.post<Activity>(`/alc/activities/${saved.id}/submit`);setMessage('Activity submitted for verification.')}
+      if(submit){saved=await api.post<Activity>(`/portal/activities/${saved.id}/submit`);setMessage('Activity submitted for verification.')}
       else setMessage('Draft saved successfully.')
       await client.invalidateQueries({queryKey:['activity',saved.id]})
-      if(!id)navigate(`/alc/activities/${saved.id}`,{replace:true})
+      if(!id)navigate(`/portal/activities/${saved.id}`,{replace:true})
     }catch(e){setFormError(e instanceof Error?e.message:'Unable to save activity')}
     finally{setBusy(false)}
   }
-  async function removeEvidence(e:Evidence){if(!confirm(`Remove ${e.original_filename}?`))return;await api.delete(`/alc/evidence/${e.id}`);client.invalidateQueries({queryKey:['activity',id]})}
-  async function openEvidence(e:Evidence){const {url}=await api.get<{url:string}>(`/alc/evidence/${e.id}/access`);window.open(url,'_blank','noopener,noreferrer')}
+  async function removeEvidence(e:Evidence){if(!confirm(`Remove ${e.original_filename}?`))return;await api.delete(`/portal/evidence/${e.id}`);client.invalidateQueries({queryKey:['activity',id]})}
+  async function openEvidence(e:Evidence){const {url}=await api.get<{url:string}>(`/portal/evidence/${e.id}/access`);window.open(url,'_blank','noopener,noreferrer')}
   if(id&&activityQuery.isLoading)return <Loading/>;if(activityQuery.error)return <ErrorState error={activityQuery.error}/>
   return <><PageHeader title={isNew?'Record an activity':activity?.activity_number??'Activity'} description={editable?'Complete the details, attach evidence, then save or submit.':'This activity is locked in its current workflow status.'} actions={activity&&<Badge status={activity.status}/>}/>
     {activity?.status==='CORRECTION_REQUIRED'&&<div className="mb-5 rounded-lg border border-amber-300 bg-amber-50 p-4"><p className="font-semibold text-amber-900">Correction requested</p><p className="mt-1 text-sm text-amber-800">{[...activity.reviews].reverse().find(r=>r.action==='REQUEST_CORRECTION')?.remark}</p></div>}

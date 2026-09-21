@@ -80,11 +80,11 @@ async def login(
     query = (
         select(User)
         .outerjoin(ALC, User.alc_id == ALC.id)
-        .options(selectinload(User.alc))
+        .options(selectinload(User.alc), selectinload(User.sbu))
         .where(
             or_(
                 and_(
-                    User.role == Role.ADMIN,
+                    User.role.in_((Role.ADMIN, Role.SBU)),
                     or_(
                         func.lower(User.username) == identifier,
                         func.lower(User.email) == identifier,
@@ -142,7 +142,7 @@ async def rotate_refresh(
         raise HTTPException(status_code=401, detail="Session expired")
     user = await db.scalar(
         select(User)
-        .options(selectinload(User.alc))
+        .options(selectinload(User.alc), selectinload(User.sbu))
         .where(User.id == stored.user_id, User.is_active.is_(True))
     )
     if not user or (user.alc and user.alc.status.value != "ACTIVE"):
