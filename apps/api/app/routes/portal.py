@@ -92,9 +92,22 @@ def apply_activity(activity: Activity, payload: ActivityIn) -> None:
 
 
 async def scoped_alc_ids(user: User, db: AsyncSession) -> Sequence[uuid.UUID]:
-    """Return the set of ALC ids the current portal user may access."""
+    """Return the set of ALC ids the current portal user may access.
+
+    The scope key must be present. An SBU with no ``sbu_id`` (or an ALC with no
+    ``alc_id``) is denied by returning an empty scope — a missing key must never
+    be interpreted as "see everything". Without this guard an SBU whose
+    ``sbu_id`` is NULL would compile to ``ALC.sbu_id IS NULL`` and leak every
+    unassigned ALC. Route guards already reject such accounts, but scoping
+    defensively here keeps the isolation invariant even if a future endpoint is
+    wired without the matching guard.
+    """
     if user.role == Role.SBU:
+        if user.sbu_id is None:
+            return []
         return (await db.scalars(select(ALC.id).where(ALC.sbu_id == user.sbu_id))).all()
+    if user.alc_id is None:
+        return []
     return [user.alc_id]
 
 
@@ -708,9 +721,15 @@ async def evidence_content(
 ):
     if settings.storage_backend != "local":
         raise HTTPException(status_code=404, detail="Evidence not found")
+    # Authorize (SBU/ALC scoping) before touching the filesystem, then treat a
+    # missing local file as a 404 rather than letting FileNotFoundError escape as a 500.
     evidence = await scoped_evidence(db, list(await scoped_alc_ids(user, db)), evidence_id)
+    try:
+        content = await storage_service.get(evidence.storage_key)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Evidence not found") from None
     return Response(
-        await storage_service.get(evidence.storage_key),
+        content,
         media_type=evidence.mime_type,
         headers={"Cache-Control": "private, no-store"},
     )

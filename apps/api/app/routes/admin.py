@@ -13,7 +13,13 @@ from sqlalchemy.orm import selectinload
 from app.auth import hash_password
 from app.config import settings
 from app.database import get_db
-from app.dependencies import pagination, require_admin, require_csrf
+from app.dependencies import (
+    USER_RESPONSE_LOADERS,
+    load_user_for_response,
+    pagination,
+    require_admin,
+    require_csrf,
+)
 from app.enums import ActivityStatus, ReviewAction, Role
 from app.models import (
     ALC,
@@ -274,7 +280,9 @@ async def get_activity(
     activity_id: uuid.UUID, _: User = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ):
     activity = await admin_activity(db, activity_id)
-    alc = await db.get(ALC, activity.alc_id)
+    alc = await db.scalar(
+        select(ALC).options(selectinload(ALC.sbu)).where(ALC.id == activity.alc_id)
+    )
     return {
         "activity": ActivityOut.model_validate(activity),
         "alc": {
@@ -283,6 +291,12 @@ async def get_activity(
             "alc_name": alc.alc_name,
             "status": alc.status,
         },
+        # Admin is global; surface the ALC's assigned SBU for context (may be unassigned).
+        "sbu": (
+            {"id": alc.sbu.id, "code": alc.sbu.code, "name": alc.sbu.name}
+            if alc.sbu
+            else None
+        ),
     }
 
 
@@ -374,7 +388,11 @@ async def evidence_content(
     evidence = await db.scalar(select(ActivityEvidence).where(ActivityEvidence.id == evidence_id, ActivityEvidence.is_active.is_(True)))
     if not evidence:
         raise HTTPException(status_code=404, detail="Evidence not found")
-    return Response(await storage_service.get(evidence.storage_key), media_type=evidence.mime_type, headers={"Cache-Control": "private, no-store"})
+    try:
+        content = await storage_service.get(evidence.storage_key)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Evidence not found") from None
+    return Response(content, media_type=evidence.mime_type, headers={"Cache-Control": "private, no-store"})
 
 
 @router.get("/alcs")
@@ -696,9 +714,7 @@ async def challenge_progress(
 async def users(_: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     return (
         await db.scalars(
-            select(User)
-            .options(selectinload(User.alc), selectinload(User.sbu))
-            .order_by(User.username)
+            select(User).options(*USER_RESPONSE_LOADERS).order_by(User.username)
         )
     ).all()
 
@@ -739,11 +755,7 @@ async def create_user(
     await db.flush()
     await record_audit(db, "user_created", "user", user.id, admin, request)
     await db.commit()
-    return await db.scalar(
-        select(User)
-        .options(selectinload(User.alc), selectinload(User.sbu))
-        .where(User.id == user.id)
-    )
+    return await load_user_for_response(db, user.id)
 
 
 @router.patch("/users/{user_id}", response_model=UserOut)
@@ -771,11 +783,7 @@ async def update_user(
         changes["password_reset"] = True
     await record_audit(db, "user_updated", "user", user.id, admin, request, changes)
     await db.commit()
-    return await db.scalar(
-        select(User)
-        .options(selectinload(User.alc), selectinload(User.sbu))
-        .where(User.id == user.id)
-    )
+    return await load_user_for_response(db, user.id)
 
 
 @router.delete("/users/{user_id}")

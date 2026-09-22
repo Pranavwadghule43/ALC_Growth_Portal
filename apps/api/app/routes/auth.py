@@ -4,7 +4,6 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from redis.asyncio import Redis
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.auth import (
     create_access_token,
@@ -16,7 +15,7 @@ from app.auth import (
 )
 from app.config import settings
 from app.database import get_db
-from app.dependencies import get_current_user, require_csrf
+from app.dependencies import USER_RESPONSE_LOADERS, get_current_user, require_csrf
 from app.enums import Role
 from app.models import ALC, RefreshToken, User
 from app.schemas import ChangePasswordIn, LoginIn, UserOut
@@ -103,7 +102,7 @@ async def login(
     query = (
         select(User)
         .outerjoin(ALC, User.alc_id == ALC.id)
-        .options(selectinload(User.alc), selectinload(User.sbu))
+        .options(*USER_RESPONSE_LOADERS)
         .where(
             or_(
                 and_(
@@ -144,7 +143,7 @@ async def admin_login(
     identifier = payload.identifier.lower()
     query = (
         select(User)
-        .options(selectinload(User.alc), selectinload(User.sbu))
+        .options(*USER_RESPONSE_LOADERS)
         .where(
             User.role == Role.ADMIN,
             or_(
@@ -185,7 +184,7 @@ async def rotate_refresh(
         raise HTTPException(status_code=401, detail="Session expired")
     user = await db.scalar(
         select(User)
-        .options(selectinload(User.alc), selectinload(User.sbu))
+        .options(*USER_RESPONSE_LOADERS)
         .where(User.id == stored.user_id, User.is_active.is_(True))
     )
     if not user or (user.alc and user.alc.status.value != "ACTIVE"):

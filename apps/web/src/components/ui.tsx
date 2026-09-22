@@ -1,6 +1,10 @@
 import { ReactNode, useEffect } from 'react'
-import { AlertCircle, CheckCircle2, Inbox, X } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { AlertCircle, CheckCircle2, ClipboardCheck, Eye, Inbox, X } from 'lucide-react'
 import type { Status } from '../types'
+
+// Statuses for which a reviewer (SBU or Admin) may still act on an activity.
+export const REVIEWABLE_STATUSES = ['SUBMITTED', 'RESUBMITTED', 'UNDER_REVIEW']
 
 const statusClasses: Record<string, string> = {
   DRAFT: 'bg-slate-100 text-slate-700', SUBMITTED: 'bg-blue-100 text-blue-800', UNDER_REVIEW: 'bg-indigo-100 text-indigo-800',
@@ -21,3 +25,14 @@ export function Toast({ message, onClose, tone = 'success' }: { message: string;
 }
 export function formatDate(value?: string) { return value ? new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium' }).format(new Date(value)) : '—' }
 export function formatNumber(value?: number) { return new Intl.NumberFormat('en-IN').format(value ?? 0) }
+// Row-level entry points into the activity review page. "View" (eye) is always available;
+// "Review" (check) appears only when the status permits a decision. Both open the same
+// review page at `${base}/${id}`, which itself gates the Verify/Correction/Reject actions
+// server-side and by status — the buttons never bypass authorization.
+export function RowActions({ base, id, status }: { base: string; id: string; status: string }) {
+  const reviewable = REVIEWABLE_STATUSES.includes(status)
+  return <div className="flex items-center gap-2">
+    <Link to={`${base}/${id}`} title="View activity" aria-label="View activity" className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-semibold text-navy hover:border-teal hover:text-teal"><Eye className="h-3.5 w-3.5" />View</Link>
+    {reviewable && <Link to={`${base}/${id}`} title="Review activity" aria-label="Review activity" className="inline-flex items-center gap-1 rounded-md bg-teal px-2 py-1 text-xs font-semibold text-white hover:bg-teal/90"><ClipboardCheck className="h-3.5 w-3.5" />Review</Link>}
+  </div>
+}

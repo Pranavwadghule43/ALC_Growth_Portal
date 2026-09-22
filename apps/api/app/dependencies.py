@@ -7,7 +7,28 @@ from sqlalchemy.orm import selectinload
 from app.auth import decode_access_token
 from app.database import get_db
 from app.enums import Role
-from app.models import User
+from app.models import ALC, User
+
+# Eager-load every relationship the ``UserOut`` response schema serializes, including
+# the nested ``User.alc -> ALC.sbu`` chain. Without loading ``ALC.sbu`` here, Pydantic
+# would trigger an async lazy load while building the response and fail with
+# ``MissingGreenlet``. Any endpoint that returns a ``User`` as ``UserOut`` must load
+# these (directly, or by re-querying through ``load_user_for_response`` after a commit).
+USER_RESPONSE_LOADERS = (
+    selectinload(User.alc).selectinload(ALC.sbu),
+    selectinload(User.sbu),
+)
+
+
+async def load_user_for_response(db: AsyncSession, user_id) -> User | None:
+    """Re-query a user with every relationship the response schema needs eagerly loaded.
+
+    Use after a ``commit()`` on create/update endpoints so the returned ORM object never
+    lazy-loads ``alc`` / ``alc.sbu`` / ``sbu`` during serialization.
+    """
+    return await db.scalar(
+        select(User).options(*USER_RESPONSE_LOADERS).where(User.id == user_id)
+    )
 
 
 async def get_current_user(
@@ -25,9 +46,7 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired"
         ) from None
     user = await db.scalar(
-        select(User)
-        .options(selectinload(User.alc), selectinload(User.sbu))
-        .where(User.id == user_id)
+        select(User).options(*USER_RESPONSE_LOADERS).where(User.id == user_id)
     )
     if not user or not user.is_active or (user.alc and user.alc.status.value != "ACTIVE"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account unavailable")

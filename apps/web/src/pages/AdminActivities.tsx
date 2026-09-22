@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, useLocation } from 'react-router-dom'
 import { api } from '../lib/api'
 import type { Activity, Alc, Page } from '../types'
-import { Badge, Empty, ErrorState, formatDate, Loading, PageHeader } from '../components/ui'
+import { Badge, Empty, ErrorState, formatDate, Loading, PageHeader, RowActions } from '../components/ui'
 
 type Row = { activity: Activity; alc: Alc }
 export default function AdminActivities() {
@@ -28,7 +28,7 @@ export default function AdminActivities() {
       <div className="grid grid-cols-2 gap-2 xl:col-span-1"><input aria-label="Submitted from" type="date" value={filters.date_from} onChange={e => update('date_from', e.target.value)} /><input aria-label="Submitted to" type="date" value={filters.date_to} onChange={e => update('date_to', e.target.value)} /></div>
     </div>
     {isLoading ? <Loading /> : error ? <ErrorState error={error} /> : !data?.items.length ? <Empty title="No activities found" message={queue ? 'No activities currently require review for these filters.' : 'No activities match these filters.'} /> : <>
-      <div className="table-wrap"><table><thead><tr><th>Activity ID</th><th>ALC</th><th>Type / Partner</th><th>Activity date</th><th>Submitted</th><th>Evidence</th><th>Status</th></tr></thead><tbody>{data.items.map(({ activity: a, alc }) => <tr key={a.id}><td><Link to={`/admin/activities/${a.id}`} className="font-semibold text-navy hover:text-teal">{a.activity_number}</Link></td><td><b>{alc.alc_code}</b><p className="text-xs text-slate-500">{alc.alc_name}</p></td><td>{a.activity_type}<p className="text-xs text-slate-500">{a.partner?.partner_name ?? 'No partner'}</p></td><td>{formatDate(a.activity_date)}</td><td>{formatDate(a.submitted_at)}</td><td>{a.evidence.length}</td><td><Badge status={a.status} /></td></tr>)}</tbody></table></div>
+      <div className="table-wrap"><table><thead><tr><th>Activity ID</th><th>ALC</th><th>Type / Partner</th><th>Activity date</th><th>Submitted</th><th>Evidence</th><th>Status</th><th>Actions</th></tr></thead><tbody>{data.items.map(({ activity: a, alc }) => <tr key={a.id}><td><Link to={`/admin/activities/${a.id}`} className="font-semibold text-navy hover:text-teal">{a.activity_number}</Link></td><td><b>{alc.alc_code}</b><p className="text-xs text-slate-500">{alc.alc_name}</p></td><td>{a.activity_type}<p className="text-xs text-slate-500">{a.partner?.partner_name ?? 'No partner'}</p></td><td>{formatDate(a.activity_date)}</td><td>{formatDate(a.submitted_at)}</td><td>{a.evidence.length}</td><td><Badge status={a.status} /></td><td><RowActions base="/admin/activities" id={a.id} status={a.status} /></td></tr>)}</tbody></table></div>
       <div className="mt-4 flex items-center justify-between text-sm"><span>{data.total} records · page {data.page} of {Math.max(data.pages, 1)}</span><div className="flex gap-2"><button className="btn-secondary" disabled={page === 1} onClick={() => setPage(x => x - 1)}>Previous</button><button className="btn-secondary" disabled={page >= data.pages} onClick={() => setPage(x => x + 1)}>Next</button></div></div>
     </>}
   </>
