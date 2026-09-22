@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../lib/api'
 import type { Activity, Alc, Partner } from '../types'
-import { Badge, Empty, ErrorState, formatDate, Loading, MetricCard, PageHeader } from '../components/ui'
+import { Badge, Empty, ErrorState, formatDate, Loading, MetricCard, PageHeader, Toast } from '../components/ui'
 
 const PENDING = ['SUBMITTED', 'RESUBMITTED', 'UNDER_REVIEW']
 const ATTENTION = ['CORRECTION_REQUIRED', 'REJECTED']
@@ -30,10 +30,11 @@ export default function SbuAlcDetail() {
       <MetricCard label="Needs attention" value={attention} hint="Correction required or rejected" />
       <MetricCard label="Partners" value={d.partners.length} />
     </div>
-    <section className="panel mt-6 max-w-xl p-5"><h2 className="font-bold text-navy">Reset ALC password</h2><p className="mt-1 text-sm text-slate-500">Set a temporary password for this centre's login. The current password is never shown.</p><form onSubmit={resetPassword} className="mt-4"><label>New temporary password</label><input className="mt-1" type="password" minLength={12} required autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} />{message && <p className="mt-2 text-sm text-emerald-700">{message}</p>}{error && <p className="mt-2 text-sm text-red-700">{error}</p>}<button className="btn-primary mt-3">Reset password</button></form></section>
+    <section className="panel mt-6 max-w-xl p-5"><h2 className="font-bold text-navy">Reset ALC password</h2><p className="mt-1 text-sm text-slate-500">Set a temporary password for this centre's login. The current password is never shown.</p><form onSubmit={resetPassword} className="mt-4"><label>New temporary password</label><input className="mt-1" type="password" minLength={12} required autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} />{error && <p className="mt-2 text-sm text-red-700">{error}</p>}<button className="btn-primary mt-3">Reset password</button></form></section>
     <h2 className="mb-3 mt-7 font-bold text-navy">Recent activities</h2>
     {d.activities.length ? <div className="table-wrap"><table><thead><tr><th>Activity</th><th>Type</th><th>Date</th><th>Status</th></tr></thead><tbody>{d.activities.map(a => <tr key={a.id}><td><Link className="font-semibold text-navy hover:text-teal" to={`/portal/activities/${a.id}`}>{a.activity_number}</Link></td><td>{a.activity_type}</td><td>{formatDate(a.activity_date)}</td><td><Badge status={a.status} /></td></tr>)}</tbody></table></div> : <Empty title="No activities yet" message="This centre has not submitted any activities." />}
     <h2 className="mb-3 mt-7 font-bold text-navy">Partners</h2>
     {d.partners.length ? <div className="table-wrap"><table><thead><tr><th>Partner</th><th>Type</th><th>Ecosystem</th><th>Contact</th><th>Status</th></tr></thead><tbody>{d.partners.map(p => <tr key={p.id}><td className="font-semibold">{p.partner_name}</td><td>{p.partner_type}</td><td>{p.ecosystem}</td><td>{p.contact_person ?? '—'}<p className="text-xs text-slate-500">{p.phone ?? p.email}</p></td><td><Badge status={p.status} /></td></tr>)}</tbody></table></div> : <Empty title="No partners" message="This centre has not added any partners." />}
+    {message && <Toast message={message} onClose={() => setMessage('')} />}
   </>
 }

@@ -287,6 +287,8 @@ async def alc_dashboard(user: User, db: AsyncSession) -> dict:
 async def sbu_dashboard(user: User, db: AsyncSession) -> dict:
     alc_ids = list(await scoped_alc_ids(user, db))
     assigned = len(alc_ids)
+    active_alcs = 0
+    partner_count = 0
     if not alc_ids:
         metrics = {
             "activities": 0,
@@ -301,6 +303,18 @@ async def sbu_dashboard(user: User, db: AsyncSession) -> dict:
         }
         recent: list = []
     else:
+        active_alcs = (
+            await db.scalar(
+                select(func.count(ALC.id)).where(
+                    ALC.id.in_(alc_ids), ALC.status == "ACTIVE"
+                )
+            )
+        ) or 0
+        partner_count = (
+            await db.scalar(
+                select(func.count(Partner.id)).where(Partner.alc_id.in_(alc_ids))
+            )
+        ) or 0
         base = Activity.alc_id.in_(alc_ids)
         row = (
             await db.execute(
@@ -394,6 +408,8 @@ async def sbu_dashboard(user: User, db: AsyncSession) -> dict:
     return {
         "role": Role.SBU.value,
         "assigned_alcs": assigned,
+        "active_alcs": active_alcs,
+        "partners": partner_count,
         **metrics,
         "recent_activities": recent,
     }
@@ -829,6 +845,7 @@ async def mark_read(
 async def sbu_alcs(
     page_data: tuple[int, int] = Depends(pagination),
     search: str | None = None,
+    status: str | None = None,
     user: User = Depends(require_sbu),
     db: AsyncSession = Depends(get_db),
 ):
@@ -836,6 +853,14 @@ async def sbu_alcs(
     filters = [ALC.sbu_id == user.sbu_id]
     if search:
         filters.append(or_(ALC.alc_code.ilike(f"%{search}%"), ALC.alc_name.ilike(f"%{search}%")))
+    if status:
+        filters.append(ALC.status == status)
+    partner_count = (
+        select(func.count(Partner.id))
+        .where(Partner.alc_id == ALC.id)
+        .correlate(ALC)
+        .scalar_subquery()
+    )
     total = await db.scalar(select(func.count(ALC.id)).where(*filters)) or 0
     rows = (
         (
@@ -875,6 +900,7 @@ async def sbu_alcs(
                         ),
                         0,
                     ).label("learners"),
+                    partner_count.label("partners"),
                     func.max(Activity.activity_date).label("last_activity"),
                 )
                 .outerjoin(Activity, ALC.id == Activity.alc_id)
@@ -895,7 +921,6 @@ async def sbu_alcs(
         "total": total,
         "pages": math.ceil(total / page_size) if total else 0,
     }
-
 
 @router.get("/alcs/{alc_id}")
 async def sbu_alc_detail(
@@ -957,6 +982,60 @@ async def sbu_reset_alc_password(
     return {"message": "Password reset", "user_id": target.id}
 
 
+@router.get("/sbu/partners")
+async def sbu_partners(
+    user: User = Depends(require_sbu), db: AsyncSession = Depends(get_db)
+):
+    """Partners across the SBU's assigned ALCs, with activity count and last activity."""
+    alc_ids = list(await scoped_alc_ids(user, db))
+    if not alc_ids:
+        return []
+    activity_count = (
+        select(func.count(Activity.id))
+        .where(Activity.partner_id == Partner.id)
+        .correlate(Partner)
+        .scalar_subquery()
+    )
+    last_activity = (
+        select(func.max(Activity.activity_date))
+        .where(Activity.partner_id == Partner.id)
+        .correlate(Partner)
+        .scalar_subquery()
+    )
+    rows = (
+        await db.execute(
+            select(
+                Partner,
+                ALC.alc_code,
+                ALC.alc_name,
+                activity_count.label("activity_count"),
+                last_activity.label("last_activity"),
+            )
+            .join(ALC, Partner.alc_id == ALC.id)
+            .where(Partner.alc_id.in_(alc_ids))
+            .order_by(Partner.partner_name)
+        )
+    ).all()
+    return [
+        {
+            "id": partner.id,
+            "alc_id": partner.alc_id,
+            "alc_code": alc_code,
+            "alc_name": alc_name,
+            "partner_name": partner.partner_name,
+            "partner_type": partner.partner_type,
+            "ecosystem": partner.ecosystem,
+            "contact_person": partner.contact_person,
+            "phone": partner.phone,
+            "email": partner.email,
+            "status": partner.status,
+            "activity_count": activities,
+            "last_activity": last,
+        }
+        for partner, alc_code, alc_name, activities, last in rows
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # SBU: verification queue and review decisions
 # --------------------------------------------------------------------------- #
@@ -965,6 +1044,9 @@ async def sbu_verification_queue(
     page_data: tuple[int, int] = Depends(pagination),
     status: ActivityStatus | None = None,
     alc_id: uuid.UUID | None = None,
+    activity_type: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
     search: str | None = None,
     queue_only: bool = False,
     user: User = Depends(require_sbu),
@@ -989,6 +1071,12 @@ async def sbu_verification_queue(
         )
     elif status:
         filters.append(Activity.status == status)
+    if activity_type:
+        filters.append(Activity.activity_type == activity_type)
+    if date_from:
+        filters.append(Activity.activity_date >= date_from)
+    if date_to:
+        filters.append(Activity.activity_date <= date_to)
     if search:
         filters.append(
             or_(
@@ -1187,4 +1275,206 @@ async def export_activities(
         iter([output.getvalue()]),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=portal-activities.csv"},
+    )
+
+
+@router.get("/reports/partners.csv")
+async def export_partners(
+    alc_id: uuid.UUID | None = None,
+    user: User = Depends(require_portal_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Partner report scoped to the caller's ALCs (SBU: assigned; ALC: own)."""
+    alc_ids = list(await scoped_alc_ids(user, db))
+    filters = [Partner.alc_id.in_(alc_ids)]
+    if alc_id is not None:
+        if alc_id not in alc_ids:
+            raise HTTPException(status_code=404, detail="ALC not found")
+        filters.append(Partner.alc_id == alc_id)
+    activity_count = (
+        select(func.count(Activity.id))
+        .where(Activity.partner_id == Partner.id)
+        .correlate(Partner)
+        .scalar_subquery()
+    )
+    last_activity = (
+        select(func.max(Activity.activity_date))
+        .where(Activity.partner_id == Partner.id)
+        .correlate(Partner)
+        .scalar_subquery()
+    )
+    rows = (
+        await db.execute(
+            select(
+                Partner,
+                ALC.alc_code,
+                ALC.alc_name,
+                activity_count.label("activity_count"),
+                last_activity.label("last_activity"),
+            )
+            .join(ALC, Partner.alc_id == ALC.id)
+            .where(*filters)
+            .order_by(ALC.alc_code, Partner.partner_name)
+        )
+    ).all()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "ALC Code",
+            "ALC Name",
+            "Partner",
+            "Type",
+            "Ecosystem",
+            "Contact",
+            "Phone",
+            "Email",
+            "Status",
+            "Activities",
+            "Last Activity",
+        ]
+    )
+    for partner, alc_code, alc_name, activities, last in rows:
+        writer.writerow(
+            [
+                safe_csv(value)
+                for value in [
+                    alc_code,
+                    alc_name,
+                    partner.partner_name,
+                    partner.partner_type,
+                    partner.ecosystem,
+                    partner.contact_person or "",
+                    partner.phone or "",
+                    partner.email or "",
+                    partner.status,
+                    activities,
+                    last or "",
+                ]
+            ]
+        )
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=portal-partners.csv"},
+    )
+
+
+@router.get("/reports/verification-status.csv")
+async def export_verification_status(
+    user: User = Depends(require_portal_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-ALC verification-status summary scoped to the caller's ALCs."""
+    alc_ids = list(await scoped_alc_ids(user, db))
+    rows = (
+        (
+            await db.execute(
+                select(
+                    ALC.alc_code,
+                    ALC.alc_name,
+                    func.count(case((Activity.status != ActivityStatus.DRAFT, 1))).label(
+                        "submitted"
+                    ),
+                    func.count(
+                        case(
+                            (
+                                Activity.status.in_(
+                                    [
+                                        ActivityStatus.SUBMITTED,
+                                        ActivityStatus.RESUBMITTED,
+                                        ActivityStatus.UNDER_REVIEW,
+                                    ]
+                                ),
+                                1,
+                            )
+                        )
+                    ).label("pending"),
+                    func.count(case((Activity.status == ActivityStatus.VERIFIED, 1))).label(
+                        "verified"
+                    ),
+                    func.count(
+                        case((Activity.status == ActivityStatus.CORRECTION_REQUIRED, 1))
+                    ).label("correction"),
+                    func.count(case((Activity.status == ActivityStatus.REJECTED, 1))).label(
+                        "rejected"
+                    ),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (Activity.status == ActivityStatus.VERIFIED, Activity.learners_reached),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("learners"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (Activity.status == ActivityStatus.VERIFIED, Activity.leads_generated),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("leads"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    Activity.status == ActivityStatus.VERIFIED,
+                                    Activity.admissions_generated,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("admissions"),
+                )
+                .outerjoin(Activity, ALC.id == Activity.alc_id)
+                .where(ALC.id.in_(alc_ids))
+                .group_by(ALC.id)
+                .order_by(ALC.alc_code)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "ALC Code",
+            "ALC Name",
+            "Submitted",
+            "Pending",
+            "Verified",
+            "Correction Required",
+            "Rejected",
+            "Verified Learners",
+            "Verified Leads",
+            "Verified Admissions",
+        ]
+    )
+    for row in rows:
+        writer.writerow(
+            [
+                safe_csv(value)
+                for value in [
+                    row["alc_code"],
+                    row["alc_name"],
+                    row["submitted"],
+                    row["pending"],
+                    row["verified"],
+                    row["correction"],
+                    row["rejected"],
+                    row["learners"],
+                    row["leads"],
+                    row["admissions"],
+                ]
+            ]
+        )
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=portal-verification-status.csv"},
     )

@@ -313,3 +313,107 @@ async def test_admin_assigns_alc_to_sbu(client, seeded):
     await login(client, "sbu-4", "StrongSbuPass4!", "SBU")
     codes = {row["alc_code"] for row in (await client.get("/api/portal/alcs")).json()["items"]}
     assert "00010002" in codes  # now assigned to SBU 4
+
+    
+# --- Batch G: refinement coverage ---------------------------------------- #
+async def switch(client):
+    client.cookies.clear()
+    client.headers.pop("X-CSRF-Token", None)
+
+
+@pytest.mark.asyncio
+async def test_sbu_dashboard_active_and_partner_counts(client, seeded):
+    # Deactivate Centre C, add a partner to Centre A.
+    await login(client, "admin", "StrongAdminPass!", "ADMIN")
+    await client.patch(f"/api/admin/alcs/{seeded['alc_c'].id}", json={"status": "INACTIVE"})
+    await switch(client)
+    await login(client, "00010001", "StrongAlcPassA!", "ALC")
+    await client.post(
+        "/api/portal/partners",
+        json={"partner_name": "Alpha School", "partner_type": "School", "ecosystem": "School"},
+    )
+    await switch(client)
+    await login(client, "sbu-4", "StrongSbuPass4!", "SBU")
+    data = (await client.get("/api/portal/dashboard")).json()
+    assert data["assigned_alcs"] == 2
+    assert data["active_alcs"] == 1
+    assert data["partners"] == 1
+
+
+@pytest.mark.asyncio
+async def test_sbu_alcs_status_filter_and_partner_count(client, seeded):
+    await login(client, "admin", "StrongAdminPass!", "ADMIN")
+    await client.patch(f"/api/admin/alcs/{seeded['alc_c'].id}", json={"status": "INACTIVE"})
+    await switch(client)
+    await login(client, "sbu-4", "StrongSbuPass4!", "SBU")
+    active = (await client.get("/api/portal/alcs?status=ACTIVE")).json()
+    assert {r["alc_code"] for r in active["items"]} == {"00010001"}
+    inactive = (await client.get("/api/portal/alcs?status=INACTIVE")).json()
+    assert {r["alc_code"] for r in inactive["items"]} == {"00010003"}
+    assert all("partners" in r for r in active["items"])
+
+
+@pytest.mark.asyncio
+async def test_reassignment_grants_and_revokes_access(client, seeded):
+    # Assign Centre B (SBU 6) to SBU 4 -> visible; reassign back -> not visible.
+    await login(client, "admin", "StrongAdminPass!", "ADMIN")
+    await client.patch(
+        f"/api/admin/alcs/{seeded['alc_b'].id}", json={"sbu_id": str(seeded["sbu4"].id)}
+    )
+    await switch(client)
+    await login(client, "sbu-4", "StrongSbuPass4!", "SBU")
+    codes = {r["alc_code"] for r in (await client.get("/api/portal/alcs")).json()["items"]}
+    assert "00010002" in codes
+    await switch(client)
+    await login(client, "admin", "StrongAdminPass!", "ADMIN")
+    await client.patch(
+        f"/api/admin/alcs/{seeded['alc_b'].id}", json={"sbu_id": str(seeded["sbu6"].id)}
+    )
+    await switch(client)
+    await login(client, "sbu-4", "StrongSbuPass4!", "SBU")
+    codes = {r["alc_code"] for r in (await client.get("/api/portal/alcs")).json()["items"]}
+    assert "00010002" not in codes
+    assert (await client.get(f"/api/portal/alcs/{seeded['alc_b'].id}")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_sbu_partners_endpoint_scoped(client, seeded):
+    await login(client, "00010001", "StrongAlcPassA!", "ALC")
+    await client.post(
+        "/api/portal/partners",
+        json={"partner_name": "Alpha School", "partner_type": "School", "ecosystem": "School"},
+    )
+    await switch(client)
+    await login(client, "00010002", "StrongAlcPassB!", "ALC")
+    await client.post(
+        "/api/portal/partners",
+        json={"partner_name": "Beta College", "partner_type": "College", "ecosystem": "College"},
+    )
+    await switch(client)
+    await login(client, "sbu-4", "StrongSbuPass4!", "SBU")
+    names = {p["partner_name"] for p in (await client.get("/api/portal/sbu/partners")).json()}
+    assert "Alpha School" in names and "Beta College" not in names
+
+
+@pytest.mark.asyncio
+async def test_sbu_reports_partner_and_status_scoped(client, session, seeded):
+    await alc_submit(client, session, "00010001", "StrongAlcPassA!", "alc-a")  # SBU 4
+    await alc_submit(client, session, "00010002", "StrongAlcPassB!", "alc-b")  # SBU 6
+    await login(client, "sbu-4", "StrongSbuPass4!", "SBU")
+    status_csv = (await client.get("/api/portal/reports/verification-status.csv")).text
+    assert "Centre A" in status_csv and "Centre B" not in status_csv
+    # Cross-SBU alc_id injection on the partner report is rejected.
+    blocked = await client.get(
+        f"/api/portal/reports/partners.csv?alc_id={seeded['alc_b'].id}"
+    )
+    assert blocked.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_sbu_activity_type_filter(client, session):
+    await alc_submit(client, session, "00010001", "StrongAlcPassA!", "alc-a")
+    await login(client, "sbu-4", "StrongSbuPass4!", "SBU")
+    match = (await client.get("/api/portal/verification?activity_type=Partner meeting")).json()
+    assert match["total"] >= 1
+    none = (await client.get("/api/portal/verification?activity_type=Nonexistent type")).json()
+    assert none["total"] == 0

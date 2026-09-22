@@ -23,7 +23,13 @@ export default function PortalReports() {
         <div><label>Activity type</label><input className="mt-1" value={filters.activity_type} onChange={e => setFilters({ ...filters, activity_type: e.target.value })} /></div>
         {isSbu && <div><label>ALC</label><select className="mt-1" value={filters.alc_id} onChange={e => setFilters({ ...filters, alc_id: e.target.value })}><option value="">All assigned</option>{alcs.data?.items.map(a => <option key={a.id} value={a.id}>{a.alc_code} · {a.alc_name}</option>)}</select></div>}
       </div>
-      <a className="btn-primary mt-5" href={api.downloadUrl(`/portal/reports/activities.csv?${params}`)}><Download className="h-4 w-4" />Download CSV</a>
+      <a className="btn-primary mt-5" href={api.downloadUrl(`/portal/reports/activities.csv?${params}`)}><Download className="h-4 w-4" />Download activity CSV</a>
+    </section>
+    <section className="panel mt-6 p-6"><h2 className="font-bold text-navy">Verification status report</h2><p className="mt-1 text-sm text-slate-500">Per-ALC counts by status with verified learner reach, leads and admissions.</p>
+      <a className="btn-secondary mt-4" href={api.downloadUrl('/portal/reports/verification-status.csv')}><Download className="h-4 w-4" />Download verification status CSV</a>
+    </section>
+    <section className="panel mt-6 p-6"><h2 className="font-bold text-navy">Partner report</h2><p className="mt-1 text-sm text-slate-500">Partners across your ALCs with activity count and last activity.</p>
+      <a className="btn-secondary mt-4" href={api.downloadUrl(`/portal/reports/partners.csv${filters.alc_id ? `?alc_id=${filters.alc_id}` : ''}`)}><Download className="h-4 w-4" />Download partner CSV</a>
     </section>
   </>
 }

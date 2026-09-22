@@ -1,5 +1,5 @@
-import { ReactNode } from 'react'
-import { AlertCircle, Inbox } from 'lucide-react'
+import { ReactNode, useEffect } from 'react'
+import { AlertCircle, CheckCircle2, Inbox, X } from 'lucide-react'
 import type { Status } from '../types'
 
 const statusClasses: Record<string, string> = {
@@ -14,6 +14,10 @@ export function Loading({ label = 'Loading' }: { label?: string }) { return <div
 export function Empty({ title = 'Nothing to show', message = 'Records will appear here when available.' }: { title?: string; message?: string }) { return <div className="panel flex min-h-44 flex-col items-center justify-center p-8 text-center"><Inbox className="mb-3 text-slate-400"/><h3 className="font-semibold">{title}</h3><p className="mt-1 max-w-md text-sm text-slate-500">{message}</p></div> }
 export function ErrorState({ error }: { error: unknown }) { return <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800"><AlertCircle className="mr-2 inline h-4 w-4"/>{error instanceof Error ? error.message : 'Unable to load this section'}</div> }
 export function FieldError({ message }: { message?: string }) { return message ? <p className="mt-1 text-xs text-red-700">{message}</p> : null }
+export function Toast({ message, onClose, tone = 'success' }: { message: string; onClose: () => void; tone?: 'success' | 'error' }) {
+  useEffect(() => { const t = setTimeout(onClose, 4000); return () => clearTimeout(t) }, [message, onClose])
+  const styles = tone === 'error' ? 'border-red-200 bg-red-50 text-red-800' : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+  return <div role="status" className={`fixed bottom-5 right-5 z-50 flex max-w-sm items-start gap-3 rounded-lg border px-4 py-3 text-sm shadow-lg ${styles}`}>{tone === 'error' ? <AlertCircle className="mt-0.5 h-4 w-4 shrink-0"/> : <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0"/>}<span className="flex-1">{message}</span><button onClick={onClose} aria-label="Dismiss"><X className="h-4 w-4"/></button></div>
+}
 export function formatDate(value?: string) { return value ? new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium' }).format(new Date(value)) : '—' }
 export function formatNumber(value?: number) { return new Intl.NumberFormat('en-IN').format(value ?? 0) }
-
