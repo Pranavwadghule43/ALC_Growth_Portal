@@ -10,7 +10,7 @@ interface AlcRow { id: string; alc_code: string; alc_name: string }
 
 export default function PortalReports() {
   const user = useOutletContext<User>()
-  const isSbu = user.role === 'SBU'
+  const isSbu = user.role === 'SBU' || user.role === 'DCU'
   const [filters, setFilters] = useState({ date_from: '', date_to: '', status: '', activity_type: '', alc_id: '' })
   const alcs = useQuery({ queryKey: ['report-alcs'], queryFn: () => api.get<Page<AlcRow>>('/portal/alcs?page=1&page_size=100'), enabled: isSbu })
   const params = new URLSearchParams(Object.entries(filters).filter(([, v]) => v))

@@ -67,15 +67,20 @@ function PortalGuard() {
   return <PortalShell user={data} />
 }
 
-// Restrict a portal route to a single operational role; redirect the rest to /portal.
-function RoleOnly({ role, children }: { role: Role; children: ReactNode }) {
+// DCU and SBU both supervise many ALCs and share the supervisor views; the backend bounds
+// each to its own hierarchy scope.
+const SUPERVISORS: Role[] = ['DCU', 'SBU']
+const isSupervisor = (role: Role) => SUPERVISORS.includes(role)
+
+// Restrict a portal route to the given operational roles; redirect the rest to /portal.
+function RoleOnly({ roles, children }: { roles: Role[]; children: ReactNode }) {
   const user = useOutletContext<User>()
-  return user.role === role ? <>{children}</> : <Navigate to="/portal" replace />
+  return roles.includes(user.role) ? <>{children}</> : <Navigate to="/portal" replace />
 }
-function PortalHome() { return useOutletContext<User>().role === 'SBU' ? <SbuDashboard /> : <AlcDashboard /> }
-function PortalActivities() { return useOutletContext<User>().role === 'SBU' ? <SbuActivities /> : <Activities /> }
-function PortalActivityDetail() { return useOutletContext<User>().role === 'SBU' ? <SbuReviewActivity /> : <ActivityEditor /> }
-function PortalPartners() { return useOutletContext<User>().role === 'SBU' ? <SbuPartners /> : <Partners /> }
+function PortalHome() { return isSupervisor(useOutletContext<User>().role) ? <SbuDashboard /> : <AlcDashboard /> }
+function PortalActivities() { return isSupervisor(useOutletContext<User>().role) ? <SbuActivities /> : <Activities /> }
+function PortalActivityDetail() { return isSupervisor(useOutletContext<User>().role) ? <SbuReviewActivity /> : <ActivityEditor /> }
+function PortalPartners() { return isSupervisor(useOutletContext<User>().role) ? <SbuPartners /> : <Partners /> }
 
 export default function App() {
   return <Suspense fallback={<div className="p-8"><Loading label="Loading workspace" /></div>}><Routes>
@@ -85,18 +90,18 @@ export default function App() {
     <Route element={<PortalGuard />}>
       <Route path="/portal" element={<PortalHome />} />
       <Route path="/portal/activities" element={<PortalActivities />} />
-      <Route path="/portal/activities/new" element={<RoleOnly role="ALC"><ActivityEditor /></RoleOnly>} />
+      <Route path="/portal/activities/new" element={<RoleOnly roles={['ALC']}><ActivityEditor /></RoleOnly>} />
       <Route path="/portal/activities/:id" element={<PortalActivityDetail />} />
       <Route path="/portal/partners" element={<PortalPartners />} />
       <Route path="/portal/reports" element={<PortalReports />} />
       <Route path="/portal/profile" element={<Profile />} />
-      <Route path="/portal/alcs" element={<RoleOnly role="SBU"><SbuAlcs /></RoleOnly>} />
-      <Route path="/portal/alcs/:id" element={<RoleOnly role="SBU"><SbuAlcDetail /></RoleOnly>} />
-      <Route path="/portal/verification" element={<RoleOnly role="SBU"><SbuActivities queueOnly /></RoleOnly>} />
-      <Route path="/portal/tasks" element={<RoleOnly role="ALC"><Tasks /></RoleOnly>} />
-      <Route path="/portal/challenge" element={<RoleOnly role="ALC"><Challenge /></RoleOnly>} />
-      <Route path="/portal/performance" element={<RoleOnly role="ALC"><Performance /></RoleOnly>} />
-      <Route path="/portal/resources" element={<RoleOnly role="ALC"><Resources /></RoleOnly>} />
+      <Route path="/portal/alcs" element={<RoleOnly roles={SUPERVISORS}><SbuAlcs /></RoleOnly>} />
+      <Route path="/portal/alcs/:id" element={<RoleOnly roles={SUPERVISORS}><SbuAlcDetail /></RoleOnly>} />
+      <Route path="/portal/verification" element={<RoleOnly roles={SUPERVISORS}><SbuActivities queueOnly /></RoleOnly>} />
+      <Route path="/portal/tasks" element={<RoleOnly roles={['ALC']}><Tasks /></RoleOnly>} />
+      <Route path="/portal/challenge" element={<RoleOnly roles={['ALC']}><Challenge /></RoleOnly>} />
+      <Route path="/portal/performance" element={<RoleOnly roles={['ALC']}><Performance /></RoleOnly>} />
+      <Route path="/portal/resources" element={<RoleOnly roles={['ALC']}><Resources /></RoleOnly>} />
     </Route>
 
     <Route element={<AdminGuard />}>

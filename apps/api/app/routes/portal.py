@@ -1,11 +1,13 @@
-"""Unified operational portal API shared by SBU and ALC roles.
+"""Unified operational portal API shared by the DCU, SBU and ALC roles.
 
-Every read is scoped server-side to the ALCs the authenticated user may see:
-an ALC user sees only its own centre, an SBU user sees only the ALCs assigned
-to its SBU (``ALC.sbu_id == user.sbu_id``). ALC-only write endpoints keep the
-existing ``require_alc`` guard and operate on ``user.alc_id`` directly, so ALC
-ownership isolation is unchanged. SBU-only endpoints add review/verification
-and assigned-ALC management. Admin never reaches these routes.
+Every read is scoped server-side through ``app.services.scope`` to the ALCs the
+authenticated user may see, resolved from the current hierarchy
+(RCU → DCU → SBU → ALC): an ALC user sees only its own centre, an SBU user the
+ALCs assigned to its SBU, a DCU user the ALCs of every SBU under its DCU.
+ALC-only write endpoints keep the existing ``require_alc`` guard, so ALC
+ownership isolation is unchanged. Supervisor endpoints (``require_supervisor``:
+DCU or SBU) add review/verification and ALC-directory management. Admin never
+reaches these routes.
 """
 import csv
 import io
@@ -29,11 +31,12 @@ from app.dependencies import (
     require_alc,
     require_csrf,
     require_portal_user,
-    require_sbu,
+    require_supervisor,
 )
 from app.enums import ActivityStatus, ReviewAction, Role, TaskStatus
 from app.models import (
     ALC,
+    SBU,
     Activity,
     ActivityEvidence,
     ChallengeProgress,
@@ -55,6 +58,13 @@ from app.schemas import (
 from app.services.activities import EDITABLE_STATUSES, review_activity, submit_activity
 from app.services.audit import record_audit
 from app.services.csv_export import safe_csv
+from app.services.scope import (
+    accessible_alc_ids,
+    alc_scope,
+    can_access_alc,
+    can_access_sbu,
+    sbu_scope,
+)
 from app.storage import storage_service
 
 router = APIRouter(prefix="/portal", tags=["Portal"], dependencies=[Depends(require_csrf)])
@@ -92,32 +102,47 @@ def apply_activity(activity: Activity, payload: ActivityIn) -> None:
 
 
 async def scoped_alc_ids(user: User, db: AsyncSession) -> Sequence[uuid.UUID]:
-    """Return the set of ALC ids the current portal user may access.
+    """Return the ALC ids the current portal user may access (see ``services.scope``).
 
-    The scope key must be present. An SBU with no ``sbu_id`` (or an ALC with no
-    ``alc_id``) is denied by returning an empty scope — a missing key must never
-    be interpreted as "see everything". Without this guard an SBU whose
-    ``sbu_id`` is NULL would compile to ``ALC.sbu_id IS NULL`` and leak every
-    unassigned ALC. Route guards already reject such accounts, but scoping
-    defensively here keeps the isolation invariant even if a future endpoint is
-    wired without the matching guard.
+    A missing scope key (DCU without ``dcu_id``, SBU without ``sbu_id``, ALC without
+    ``alc_id``) yields an empty scope — never "see everything" and never an
+    ``IS NULL`` match that would leak unassigned ALCs. Route guards already reject
+    such accounts; scoping defensively here keeps the invariant even if a future
+    endpoint is wired without the matching guard.
     """
-    if user.role == Role.SBU:
-        if user.sbu_id is None:
-            return []
-        return (await db.scalars(select(ALC.id).where(ALC.sbu_id == user.sbu_id))).all()
-    if user.alc_id is None:
-        return []
-    return [user.alc_id]
+    return await accessible_alc_ids(db, user)
+
+
+async def require_alc_in_scope(db: AsyncSession, user: User, alc_id: uuid.UUID) -> None:
+    """404 unless a client-supplied ``alc_id`` filter lies inside the caller's scope."""
+    if not await can_access_alc(db, user, alc_id):
+        raise HTTPException(status_code=404, detail="ALC not found")
+
+
+async def require_sbu_in_scope(db: AsyncSession, user: User, sbu_id: uuid.UUID) -> None:
+    """404 unless a client-supplied ``sbu_id`` filter lies inside the caller's scope."""
+    if not await can_access_sbu(db, user, sbu_id):
+        raise HTTPException(status_code=404, detail="SBU not found")
+
+
+def actor_scope(user: User) -> dict:
+    """Audit metadata naming the supervisor's own hierarchy key (never a password)."""
+    if user.role == Role.DCU:
+        return {"dcu_id": str(user.dcu_id)}
+    return {"sbu_id": str(user.sbu_id)}
+
+
+def alcs_of_sbu(sbu_id: uuid.UUID):
+    return select(ALC.id).where(ALC.sbu_id == sbu_id).scalar_subquery()
 
 
 async def scoped_activity(
-    db: AsyncSession, alc_ids: Sequence[uuid.UUID], activity_id: uuid.UUID, lock: bool = False
+    db: AsyncSession, user: User, activity_id: uuid.UUID, lock: bool = False
 ) -> Activity:
     query = (
         select(Activity)
         .options(*ACTIVITY_LOADERS)
-        .where(Activity.id == activity_id, Activity.alc_id.in_(alc_ids))
+        .where(Activity.id == activity_id, alc_scope(user, Activity.alc_id))
     )
     if lock:
         query = query.with_for_update(of=Activity)
@@ -129,9 +154,7 @@ async def scoped_activity(
 
 async def scoped_alc(db: AsyncSession, user: User, alc_id: uuid.UUID) -> ALC:
     alc = await db.scalar(
-        select(ALC)
-        .options(selectinload(ALC.sbu))
-        .where(ALC.id == alc_id, ALC.id.in_(await scoped_alc_ids(user, db)))
+        select(ALC).options(selectinload(ALC.sbu)).where(ALC.id == alc_id, alc_scope(user))
     )
     if not alc:
         raise HTTPException(status_code=404, detail="ALC not found")
@@ -297,12 +320,14 @@ async def alc_dashboard(user: User, db: AsyncSession) -> dict:
     }
 
 
-async def sbu_dashboard(user: User, db: AsyncSession) -> dict:
-    alc_ids = list(await scoped_alc_ids(user, db))
-    assigned = len(alc_ids)
+async def supervisor_dashboard(user: User, db: AsyncSession) -> dict:
+    """Dashboard for DCU and SBU users over every ALC in their hierarchy scope."""
+    in_scope = alc_scope(user)
+    assigned = await db.scalar(select(func.count(ALC.id)).where(in_scope)) or 0
+    sbu_count = await db.scalar(select(func.count(SBU.id)).where(sbu_scope(user))) or 0
     active_alcs = 0
     partner_count = 0
-    if not alc_ids:
+    if not assigned:
         metrics = {
             "activities": 0,
             "submitted": 0,
@@ -318,17 +343,15 @@ async def sbu_dashboard(user: User, db: AsyncSession) -> dict:
     else:
         active_alcs = (
             await db.scalar(
-                select(func.count(ALC.id)).where(
-                    ALC.id.in_(alc_ids), ALC.status == "ACTIVE"
-                )
+                select(func.count(ALC.id)).where(in_scope, ALC.status == "ACTIVE")
             )
         ) or 0
         partner_count = (
             await db.scalar(
-                select(func.count(Partner.id)).where(Partner.alc_id.in_(alc_ids))
+                select(func.count(Partner.id)).where(alc_scope(user, Partner.alc_id))
             )
         ) or 0
-        base = Activity.alc_id.in_(alc_ids)
+        base = alc_scope(user, Activity.alc_id)
         row = (
             await db.execute(
                 select(
@@ -419,7 +442,8 @@ async def sbu_dashboard(user: User, db: AsyncSession) -> dict:
             for activity, alc in rows
         ]
     return {
-        "role": Role.SBU.value,
+        "role": user.role.value,
+        "sbus": sbu_count,
         "assigned_alcs": assigned,
         "active_alcs": active_alcs,
         "partners": partner_count,
@@ -430,8 +454,8 @@ async def sbu_dashboard(user: User, db: AsyncSession) -> dict:
 
 @router.get("/dashboard")
 async def dashboard(user: User = Depends(require_portal_user), db: AsyncSession = Depends(get_db)):
-    if user.role == Role.SBU:
-        return await sbu_dashboard(user, db)
+    if user.role in (Role.DCU, Role.SBU):
+        return await supervisor_dashboard(user, db)
     return await alc_dashboard(user, db)
 
 
@@ -444,6 +468,7 @@ async def list_activities(
     status: ActivityStatus | None = None,
     activity_type: str | None = None,
     alc_id: uuid.UUID | None = None,
+    sbu_id: uuid.UUID | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
     search: str | None = None,
@@ -451,12 +476,13 @@ async def list_activities(
     db: AsyncSession = Depends(get_db),
 ):
     page, page_size = page_data
-    alc_ids = list(await scoped_alc_ids(user, db))
-    filters = [Activity.alc_id.in_(alc_ids)]
+    filters = [alc_scope(user, Activity.alc_id)]
     if alc_id is not None:
-        if alc_id not in alc_ids:
-            raise HTTPException(status_code=404, detail="ALC not found")
+        await require_alc_in_scope(db, user, alc_id)
         filters.append(Activity.alc_id == alc_id)
+    if sbu_id is not None:
+        await require_sbu_in_scope(db, user, sbu_id)
+        filters.append(Activity.alc_id.in_(alcs_of_sbu(sbu_id)))
     if status:
         filters.append(Activity.status == status)
     if activity_type:
@@ -514,7 +540,7 @@ async def create_activity(
     db.add(activity)
     await record_audit(db, "activity_created", "activity", activity.id, user, request)
     await db.commit()
-    return await scoped_activity(db, [user.alc_id], activity.id)
+    return await scoped_activity(db, user, activity.id)
 
 
 @router.get("/activities/{activity_id}", response_model=ActivityOut)
@@ -523,7 +549,7 @@ async def get_activity(
     user: User = Depends(require_portal_user),
     db: AsyncSession = Depends(get_db),
 ):
-    return await scoped_activity(db, list(await scoped_alc_ids(user, db)), activity_id)
+    return await scoped_activity(db, user, activity_id)
 
 
 @router.patch("/activities/{activity_id}", response_model=ActivityOut)
@@ -534,7 +560,7 @@ async def update_activity(
     user: User = Depends(require_alc),
     db: AsyncSession = Depends(get_db),
 ):
-    activity = await scoped_activity(db, [user.alc_id], activity_id, lock=True)
+    activity = await scoped_activity(db, user, activity_id, lock=True)
     if activity.status not in EDITABLE_STATUSES:
         raise HTTPException(status_code=409, detail="Activity cannot be modified")
     if payload.partner_id and not await db.scalar(
@@ -544,7 +570,7 @@ async def update_activity(
     apply_activity(activity, payload)
     await record_audit(db, "activity_updated", "activity", activity.id, user, request)
     await db.commit()
-    return await scoped_activity(db, [user.alc_id], activity.id)
+    return await scoped_activity(db, user, activity.id)
 
 
 @router.post("/activities/{activity_id}/submit", response_model=ActivityOut)
@@ -554,15 +580,27 @@ async def submit(
     user: User = Depends(require_alc),
     db: AsyncSession = Depends(get_db),
 ):
-    activity = await scoped_activity(db, [user.alc_id], activity_id, lock=True)
+    activity = await scoped_activity(db, user, activity_id, lock=True)
     previous = activity.status
     await submit_activity(db, activity, user)
     if previous == ActivityStatus.CORRECTION_REQUIRED:
-        alc_sbu_id = await db.scalar(select(ALC.sbu_id).where(ALC.id == activity.alc_id))
+        # Notify the reviewers of this ALC under the *current* hierarchy: every admin, the
+        # SBU users of its SBU, and the DCU users of that SBU's DCU.
+        alc_sbu_id, alc_dcu_id = (
+            await db.execute(
+                select(ALC.sbu_id, SBU.dcu_id)
+                .outerjoin(SBU, ALC.sbu_id == SBU.id)
+                .where(ALC.id == activity.alc_id)
+            )
+        ).one()
         recipient_conditions = [User.role == Role.ADMIN]
         if alc_sbu_id is not None:
             recipient_conditions.append(
                 (User.role == Role.SBU) & (User.sbu_id == alc_sbu_id)
+            )
+        if alc_dcu_id is not None:
+            recipient_conditions.append(
+                (User.role == Role.DCU) & (User.dcu_id == alc_dcu_id)
             )
         reviewers = (
             await db.scalars(
@@ -593,21 +631,21 @@ async def submit(
     )
     await db.commit()
     db.expire(activity, ["reviews", "revisions"])
-    return await scoped_activity(db, [user.alc_id], activity.id)
+    return await scoped_activity(db, user, activity.id)
 
 
 # --------------------------------------------------------------------------- #
 # Evidence (shared read; ALC-only writes)
 # --------------------------------------------------------------------------- #
 async def scoped_evidence(
-    db: AsyncSession, alc_ids: Sequence[uuid.UUID], evidence_id: uuid.UUID
+    db: AsyncSession, user: User, evidence_id: uuid.UUID
 ) -> ActivityEvidence:
     evidence = await db.scalar(
         select(ActivityEvidence)
         .join(Activity)
         .where(
             ActivityEvidence.id == evidence_id,
-            Activity.alc_id.in_(alc_ids),
+            alc_scope(user, Activity.alc_id),
             ActivityEvidence.is_active.is_(True),
         )
     )
@@ -624,7 +662,7 @@ async def upload_evidence(
     user: User = Depends(require_alc),
     db: AsyncSession = Depends(get_db),
 ):
-    activity = await scoped_activity(db, [user.alc_id], activity_id)
+    activity = await scoped_activity(db, user, activity_id)
     if activity.status not in EDITABLE_STATUSES:
         raise HTTPException(status_code=409, detail="Evidence is locked")
     active_count = sum(1 for item in activity.evidence if item.is_active)
@@ -683,8 +721,8 @@ async def delete_evidence(
     user: User = Depends(require_alc),
     db: AsyncSession = Depends(get_db),
 ):
-    evidence = await scoped_evidence(db, [user.alc_id], evidence_id)
-    activity = await scoped_activity(db, [user.alc_id], evidence.activity_id)
+    evidence = await scoped_evidence(db, user, evidence_id)
+    activity = await scoped_activity(db, user, evidence.activity_id)
     if activity.status not in EDITABLE_STATUSES:
         raise HTTPException(status_code=409, detail="Evidence is locked")
     evidence.is_active = False
@@ -701,7 +739,7 @@ async def evidence_access(
     user: User = Depends(require_portal_user),
     db: AsyncSession = Depends(get_db),
 ):
-    evidence = await scoped_evidence(db, list(await scoped_alc_ids(user, db)), evidence_id)
+    evidence = await scoped_evidence(db, user, evidence_id)
     if settings.storage_backend == "local":
         return {
             "url": f"{str(request.base_url).rstrip('/')}/api/portal/evidence/{evidence_id}/content",
@@ -721,9 +759,9 @@ async def evidence_content(
 ):
     if settings.storage_backend != "local":
         raise HTTPException(status_code=404, detail="Evidence not found")
-    # Authorize (SBU/ALC scoping) before touching the filesystem, then treat a
+    # Authorize (DCU/SBU/ALC scoping) before touching the filesystem, then treat a
     # missing local file as a 404 rather than letting FileNotFoundError escape as a 500.
-    evidence = await scoped_evidence(db, list(await scoped_alc_ids(user, db)), evidence_id)
+    evidence = await scoped_evidence(db, user, evidence_id)
     try:
         content = await storage_service.get(evidence.storage_key)
     except FileNotFoundError:
@@ -742,10 +780,11 @@ async def evidence_content(
 async def partners(
     user: User = Depends(require_portal_user), db: AsyncSession = Depends(get_db)
 ):
-    alc_ids = list(await scoped_alc_ids(user, db))
     return (
         await db.scalars(
-            select(Partner).where(Partner.alc_id.in_(alc_ids)).order_by(Partner.partner_name)
+            select(Partner)
+            .where(alc_scope(user, Partner.alc_id))
+            .order_by(Partner.partner_name)
         )
     ).all()
 
@@ -858,18 +897,87 @@ async def mark_read(
 
 
 # --------------------------------------------------------------------------- #
-# SBU: assigned ALC directory and detail
+# Supervisor (DCU / SBU): SBU and ALC directory, ALC detail, partners
 # --------------------------------------------------------------------------- #
+@router.get("/sbus")
+async def supervisor_sbus(
+    user: User = Depends(require_supervisor), db: AsyncSession = Depends(get_db)
+):
+    """SBUs in the caller's scope: every SBU under a DCU user's DCU, or an SBU user's own."""
+    alc_count = (
+        select(func.count(ALC.id)).where(ALC.sbu_id == SBU.id).correlate(SBU).scalar_subquery()
+    )
+    rows = (
+        (
+            await db.execute(
+                select(
+                    SBU.id,
+                    SBU.code,
+                    SBU.name,
+                    SBU.is_active,
+                    SBU.dcu_id,
+                    alc_count.label("assigned_alcs"),
+                )
+                .where(sbu_scope(user))
+                .order_by(SBU.code)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return {"items": rows, "total": len(rows)}
+
+
+@router.get("/sbus/{sbu_id}")
+async def supervisor_sbu_detail(
+    sbu_id: uuid.UUID, user: User = Depends(require_supervisor), db: AsyncSession = Depends(get_db)
+):
+    sbu = await db.scalar(
+        select(SBU).options(selectinload(SBU.dcu)).where(SBU.id == sbu_id, sbu_scope(user))
+    )
+    if not sbu:
+        raise HTTPException(status_code=404, detail="SBU not found")
+    alcs_rows = (
+        (
+            await db.execute(
+                select(ALC.id, ALC.alc_code, ALC.alc_name, ALC.status)
+                .where(ALC.sbu_id == sbu.id, alc_scope(user))
+                .order_by(ALC.alc_code)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return {
+        "sbu": {
+            "id": sbu.id,
+            "code": sbu.code,
+            "name": sbu.name,
+            "is_active": sbu.is_active,
+            "dcu": (
+                {"id": sbu.dcu.id, "code": sbu.dcu.code, "name": sbu.dcu.name}
+                if sbu.dcu
+                else None
+            ),
+        },
+        "alcs": alcs_rows,
+    }
+
+
 @router.get("/alcs")
-async def sbu_alcs(
+async def supervisor_alcs(
     page_data: tuple[int, int] = Depends(pagination),
     search: str | None = None,
     status: str | None = None,
-    user: User = Depends(require_sbu),
+    sbu_id: uuid.UUID | None = None,
+    user: User = Depends(require_supervisor),
     db: AsyncSession = Depends(get_db),
 ):
     page, page_size = page_data
-    filters = [ALC.sbu_id == user.sbu_id]
+    filters = [alc_scope(user)]
+    if sbu_id is not None:
+        await require_sbu_in_scope(db, user, sbu_id)
+        filters.append(ALC.sbu_id == sbu_id)
     if search:
         filters.append(or_(ALC.alc_code.ilike(f"%{search}%"), ALC.alc_name.ilike(f"%{search}%")))
     if status:
@@ -889,6 +997,8 @@ async def sbu_alcs(
                     ALC.alc_code,
                     ALC.alc_name,
                     ALC.status,
+                    ALC.sbu_id,
+                    SBU.code.label("sbu_code"),
                     func.count(Activity.id).label("activities"),
                     func.count(case((Activity.status == ActivityStatus.VERIFIED, 1))).label(
                         "verified"
@@ -922,9 +1032,10 @@ async def sbu_alcs(
                     partner_count.label("partners"),
                     func.max(Activity.activity_date).label("last_activity"),
                 )
+                .outerjoin(SBU, ALC.sbu_id == SBU.id)
                 .outerjoin(Activity, ALC.id == Activity.alc_id)
                 .where(*filters)
-                .group_by(ALC.id)
+                .group_by(ALC.id, SBU.id)
                 .order_by(ALC.alc_code)
                 .offset((page - 1) * page_size)
                 .limit(page_size)
@@ -942,8 +1053,8 @@ async def sbu_alcs(
     }
 
 @router.get("/alcs/{alc_id}")
-async def sbu_alc_detail(
-    alc_id: uuid.UUID, user: User = Depends(require_sbu), db: AsyncSession = Depends(get_db)
+async def supervisor_alc_detail(
+    alc_id: uuid.UUID, user: User = Depends(require_supervisor), db: AsyncSession = Depends(get_db)
 ):
     alc = await scoped_alc(db, user, alc_id)
     activities = (
@@ -966,6 +1077,11 @@ async def sbu_alc_detail(
             "alc_code": alc.alc_code,
             "alc_name": alc.alc_name,
             "status": alc.status,
+            "sbu": (
+                {"id": alc.sbu.id, "code": alc.sbu.code, "name": alc.sbu.name}
+                if alc.sbu
+                else None
+            ),
         },
         "activities": [ActivityOut.model_validate(x) for x in activities],
         "partners": partners_list,
@@ -973,13 +1089,15 @@ async def sbu_alc_detail(
 
 
 @router.post("/alcs/{alc_id}/reset-password")
-async def sbu_reset_alc_password(
+async def supervisor_reset_alc_password(
     alc_id: uuid.UUID,
     payload: PasswordResetIn,
     request: Request,
-    user: User = Depends(require_sbu),
+    user: User = Depends(require_supervisor),
     db: AsyncSession = Depends(get_db),
 ):
+    """Reset the login of an ALC inside the caller's scope. Supervisors can only reset ALC
+    logins — never SBU, DCU or ADMIN accounts (user management stays admin-only)."""
     alc = await scoped_alc(db, user, alc_id)
     target = await db.scalar(
         select(User).where(User.alc_id == alc.id, User.role == Role.ALC).order_by(User.username)
@@ -995,20 +1113,17 @@ async def sbu_reset_alc_password(
         target.id,
         user,
         request,
-        {"alc_id": str(alc.id), "sbu_id": str(user.sbu_id), "password_reset": True},
+        {"alc_id": str(alc.id), **actor_scope(user), "password_reset": True},
     )
     await db.commit()
     return {"message": "Password reset", "user_id": target.id}
 
 
 @router.get("/sbu/partners")
-async def sbu_partners(
-    user: User = Depends(require_sbu), db: AsyncSession = Depends(get_db)
+async def supervisor_partners(
+    user: User = Depends(require_supervisor), db: AsyncSession = Depends(get_db)
 ):
-    """Partners across the SBU's assigned ALCs, with activity count and last activity."""
-    alc_ids = list(await scoped_alc_ids(user, db))
-    if not alc_ids:
-        return []
+    """Partners across the caller's in-scope ALCs, with activity count and last activity."""
     activity_count = (
         select(func.count(Activity.id))
         .where(Activity.partner_id == Partner.id)
@@ -1031,7 +1146,7 @@ async def sbu_partners(
                 last_activity.label("last_activity"),
             )
             .join(ALC, Partner.alc_id == ALC.id)
-            .where(Partner.alc_id.in_(alc_ids))
+            .where(alc_scope(user, Partner.alc_id))
             .order_by(Partner.partner_name)
         )
     ).all()
@@ -1056,28 +1171,30 @@ async def sbu_partners(
 
 
 # --------------------------------------------------------------------------- #
-# SBU: verification queue and review decisions
+# Supervisor (DCU / SBU): verification queue and review decisions
 # --------------------------------------------------------------------------- #
 @router.get("/verification")
-async def sbu_verification_queue(
+async def supervisor_verification_queue(
     page_data: tuple[int, int] = Depends(pagination),
     status: ActivityStatus | None = None,
     alc_id: uuid.UUID | None = None,
+    sbu_id: uuid.UUID | None = None,
     activity_type: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
     search: str | None = None,
     queue_only: bool = False,
-    user: User = Depends(require_sbu),
+    user: User = Depends(require_supervisor),
     db: AsyncSession = Depends(get_db),
 ):
     page, page_size = page_data
-    alc_ids = list(await scoped_alc_ids(user, db))
-    filters = [Activity.alc_id.in_(alc_ids)]
+    filters = [alc_scope(user, Activity.alc_id)]
     if alc_id is not None:
-        if alc_id not in alc_ids:
-            raise HTTPException(status_code=404, detail="ALC not found")
+        await require_alc_in_scope(db, user, alc_id)
         filters.append(Activity.alc_id == alc_id)
+    if sbu_id is not None:
+        await require_sbu_in_scope(db, user, sbu_id)
+        filters.append(Activity.alc_id.in_(alcs_of_sbu(sbu_id)))
     if queue_only and not status:
         filters.append(
             Activity.status.in_(
@@ -1142,10 +1259,12 @@ async def sbu_verification_queue(
 
 
 @router.get("/verification/{activity_id}")
-async def sbu_review_detail(
-    activity_id: uuid.UUID, user: User = Depends(require_sbu), db: AsyncSession = Depends(get_db)
+async def supervisor_review_detail(
+    activity_id: uuid.UUID,
+    user: User = Depends(require_supervisor),
+    db: AsyncSession = Depends(get_db),
 ):
-    activity = await scoped_activity(db, list(await scoped_alc_ids(user, db)), activity_id)
+    activity = await scoped_activity(db, user, activity_id)
     alc = await db.get(ALC, activity.alc_id)
     return {
         "activity": ActivityOut.model_validate(activity),
@@ -1158,7 +1277,7 @@ async def sbu_review_detail(
     }
 
 
-async def sbu_decision(
+async def supervisor_decision(
     activity_id: uuid.UUID,
     payload: ReviewDecisionIn,
     action: ReviewAction,
@@ -1166,8 +1285,7 @@ async def sbu_decision(
     user: User,
     db: AsyncSession,
 ) -> ActivityOut:
-    alc_ids = list(await scoped_alc_ids(user, db))
-    activity = await scoped_activity(db, alc_ids, activity_id, lock=True)
+    activity = await scoped_activity(db, user, activity_id, lock=True)
     await review_activity(db, activity, user, action, payload.remark)
     await record_audit(
         db,
@@ -1176,46 +1294,46 @@ async def sbu_decision(
         activity.id,
         user,
         request,
-        {"remark": payload.remark, "alc_id": str(activity.alc_id), "sbu_id": str(user.sbu_id)},
+        {"remark": payload.remark, "alc_id": str(activity.alc_id), **actor_scope(user)},
     )
     await db.commit()
     db.expire(activity, ["reviews", "revisions"])
-    return await scoped_activity(db, alc_ids, activity.id)
+    return await scoped_activity(db, user, activity.id)
 
 
 @router.post("/activities/{activity_id}/verify", response_model=ActivityOut)
-async def sbu_verify(
+async def supervisor_verify(
     activity_id: uuid.UUID,
     payload: ReviewDecisionIn,
     request: Request,
-    user: User = Depends(require_sbu),
+    user: User = Depends(require_supervisor),
     db: AsyncSession = Depends(get_db),
 ):
-    return await sbu_decision(activity_id, payload, ReviewAction.VERIFY, request, user, db)
+    return await supervisor_decision(activity_id, payload, ReviewAction.VERIFY, request, user, db)
 
 
 @router.post("/activities/{activity_id}/request-correction", response_model=ActivityOut)
-async def sbu_request_correction(
+async def supervisor_request_correction(
     activity_id: uuid.UUID,
     payload: ReviewDecisionIn,
     request: Request,
-    user: User = Depends(require_sbu),
+    user: User = Depends(require_supervisor),
     db: AsyncSession = Depends(get_db),
 ):
-    return await sbu_decision(
+    return await supervisor_decision(
         activity_id, payload, ReviewAction.REQUEST_CORRECTION, request, user, db
     )
 
 
 @router.post("/activities/{activity_id}/reject", response_model=ActivityOut)
-async def sbu_reject(
+async def supervisor_reject(
     activity_id: uuid.UUID,
     payload: ReviewDecisionIn,
     request: Request,
-    user: User = Depends(require_sbu),
+    user: User = Depends(require_supervisor),
     db: AsyncSession = Depends(get_db),
 ):
-    return await sbu_decision(activity_id, payload, ReviewAction.REJECT, request, user, db)
+    return await supervisor_decision(activity_id, payload, ReviewAction.REJECT, request, user, db)
 
 
 # --------------------------------------------------------------------------- #
@@ -1226,18 +1344,20 @@ async def export_activities(
     date_from: date | None = None,
     date_to: date | None = None,
     alc_id: uuid.UUID | None = None,
+    sbu_id: uuid.UUID | None = None,
     status: ActivityStatus | None = None,
     activity_type: str | None = None,
     ecosystem: str | None = None,
     user: User = Depends(require_portal_user),
     db: AsyncSession = Depends(get_db),
 ):
-    alc_ids = list(await scoped_alc_ids(user, db))
-    filters = [Activity.alc_id.in_(alc_ids)]
+    filters = [alc_scope(user, Activity.alc_id)]
     if alc_id is not None:
-        if alc_id not in alc_ids:
-            raise HTTPException(status_code=404, detail="ALC not found")
+        await require_alc_in_scope(db, user, alc_id)
         filters.append(Activity.alc_id == alc_id)
+    if sbu_id is not None:
+        await require_sbu_in_scope(db, user, sbu_id)
+        filters.append(Activity.alc_id.in_(alcs_of_sbu(sbu_id)))
     if status:
         filters.append(Activity.status == status)
     if activity_type:
@@ -1303,12 +1423,10 @@ async def export_partners(
     user: User = Depends(require_portal_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Partner report scoped to the caller's ALCs (SBU: assigned; ALC: own)."""
-    alc_ids = list(await scoped_alc_ids(user, db))
-    filters = [Partner.alc_id.in_(alc_ids)]
+    """Partner report scoped to the caller's ALCs (DCU: region; SBU: assigned; ALC: own)."""
+    filters = [alc_scope(user, Partner.alc_id)]
     if alc_id is not None:
-        if alc_id not in alc_ids:
-            raise HTTPException(status_code=404, detail="ALC not found")
+        await require_alc_in_scope(db, user, alc_id)
         filters.append(Partner.alc_id == alc_id)
     activity_count = (
         select(func.count(Activity.id))
@@ -1385,7 +1503,6 @@ async def export_verification_status(
     db: AsyncSession = Depends(get_db),
 ):
     """Per-ALC verification-status summary scoped to the caller's ALCs."""
-    alc_ids = list(await scoped_alc_ids(user, db))
     rows = (
         (
             await db.execute(
@@ -1450,7 +1567,7 @@ async def export_verification_status(
                     ).label("admissions"),
                 )
                 .outerjoin(Activity, ALC.id == Activity.alc_id)
-                .where(ALC.id.in_(alc_ids))
+                .where(alc_scope(user))
                 .group_by(ALC.id)
                 .order_by(ALC.alc_code)
             )

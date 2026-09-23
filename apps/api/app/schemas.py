@@ -11,11 +11,20 @@ class ORMModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class DcuBrief(ORMModel):
+    id: uuid.UUID
+    code: str
+    name: str
+    rcu_id: uuid.UUID
+    is_active: bool
+
+
 class SbuBrief(ORMModel):
     id: uuid.UUID
     code: str
     name: str
     is_active: bool
+    dcu_id: uuid.UUID | None = None
 
 
 class AlcBrief(ORMModel):
@@ -34,8 +43,10 @@ class UserOut(ORMModel):
     role: Role
     alc_id: uuid.UUID | None
     sbu_id: uuid.UUID | None = None
+    dcu_id: uuid.UUID | None = None
     alc: AlcBrief | None = None
     sbu: SbuBrief | None = None
+    dcu: DcuBrief | None = None
     is_active: bool
     must_change_password: bool
 
@@ -167,6 +178,7 @@ class UserCreate(BaseModel):
     role: Role
     alc_id: uuid.UUID | None = None
     sbu_id: uuid.UUID | None = None
+    dcu_id: uuid.UUID | None = None
     password: str = Field(min_length=12, max_length=256)
     must_change_password: bool = True
 
@@ -186,17 +198,32 @@ class SbuIn(BaseModel):
     code: str = Field(min_length=1, max_length=32)
     name: str = Field(min_length=2, max_length=255)
     is_active: bool = True
+    dcu_id: uuid.UUID | None = None
 
 
 class SbuPatch(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=255)
     is_active: bool | None = None
+    # Reassign the SBU to another DCU. Only applied when the field is present in the request;
+    # an explicit ``null`` detaches the SBU from any DCU.
+    dcu_id: uuid.UUID | None = None
 
 
 class SbuOut(ORMModel):
     id: uuid.UUID
     code: str
     name: str
+    is_active: bool
+    dcu_id: uuid.UUID | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class DcuOut(ORMModel):
+    id: uuid.UUID
+    code: str
+    name: str
+    rcu_id: uuid.UUID
     is_active: bool
     created_at: datetime
     updated_at: datetime

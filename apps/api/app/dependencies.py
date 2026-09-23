@@ -8,6 +8,7 @@ from app.auth import decode_access_token
 from app.database import get_db
 from app.enums import Role
 from app.models import ALC, User
+from app.services.scope import SUPERVISOR_ROLES, has_scope_key
 
 # Eager-load every relationship the ``UserOut`` response schema serializes, including
 # the nested ``User.alc -> ALC.sbu`` chain. Without loading ``ALC.sbu`` here, Pydantic
@@ -17,6 +18,7 @@ from app.models import ALC, User
 USER_RESPONSE_LOADERS = (
     selectinload(User.alc).selectinload(ALC.sbu),
     selectinload(User.sbu),
+    selectinload(User.dcu),
 )
 
 
@@ -48,9 +50,21 @@ async def get_current_user(
     user = await db.scalar(
         select(User).options(*USER_RESPONSE_LOADERS).where(User.id == user_id)
     )
-    if not user or not user.is_active or (user.alc and user.alc.status.value != "ACTIVE"):
+    if not user or not account_available(user):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account unavailable")
     return user
+
+
+def account_available(user: User) -> bool:
+    """Active account whose own ALC / DCU (if any) is active. A DCU login must be linked to
+    exactly one active DCU; an unlinked DCU account can never hold a session."""
+    if not user.is_active:
+        return False
+    if user.alc and user.alc.status.value != "ACTIVE":
+        return False
+    if user.role == Role.DCU and (user.dcu is None or not user.dcu.is_active):
+        return False
+    return True
 
 
 async def require_admin(user: User = Depends(get_current_user)) -> User:
@@ -64,13 +78,22 @@ async def require_admin(user: User = Depends(get_current_user)) -> User:
 
 
 async def require_portal_user(user: User = Depends(get_current_user)) -> User:
-    """Allow only operational-portal roles (SBU or ALC), never ADMIN."""
-    if user.role == Role.ALC and user.alc_id is not None:
-        pass
-    elif user.role == Role.SBU and user.sbu_id is not None:
-        pass
-    else:
+    """Allow only operational-portal roles (DCU, SBU or ALC) carrying their scope key,
+    never ADMIN."""
+    if user.role == Role.ADMIN or not has_scope_key(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Portal access required")
+    if user.must_change_password:
+        raise HTTPException(status_code=403, detail="Password change required")
+    return user
+
+
+async def require_supervisor(user: User = Depends(get_current_user)) -> User:
+    """DCU or SBU with its scope key: the roles that supervise many ALCs (review queue, ALC
+    directory, password resets). Data reach is still bounded by ``services.scope``."""
+    if user.role not in SUPERVISOR_ROLES or not has_scope_key(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Supervisor access required"
+        )
     if user.must_change_password:
         raise HTTPException(status_code=403, detail="Password change required")
     return user

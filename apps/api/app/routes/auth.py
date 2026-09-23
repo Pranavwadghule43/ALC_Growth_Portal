@@ -15,7 +15,12 @@ from app.auth import (
 )
 from app.config import settings
 from app.database import get_db
-from app.dependencies import USER_RESPONSE_LOADERS, get_current_user, require_csrf
+from app.dependencies import (
+    USER_RESPONSE_LOADERS,
+    account_available,
+    get_current_user,
+    require_csrf,
+)
 from app.enums import Role
 from app.models import ALC, RefreshToken, User
 from app.schemas import ChangePasswordIn, LoginIn, UserOut
@@ -93,10 +98,10 @@ async def _establish_session(
 async def login(
     payload: LoginIn, request: Request, response: Response, db: AsyncSession = Depends(get_db)
 ):
-    """Operational-portal login for SBU and ALC only. ADMIN accounts are rejected here and
-    must use ``/auth/admin-login``. The role is derived server-side from the identifier: an
-    SBU authenticates with a username/email, an ALC with its unique ALC code. The client
-    never sends a trusted role."""
+    """Operational-portal login for DCU, SBU and ALC only. ADMIN accounts are rejected here
+    and must use ``/auth/admin-login``. The role is derived server-side from the identifier:
+    a DCU or SBU authenticates with a username/email, an ALC with its unique ALC code. The
+    client never sends a trusted role."""
     await check_rate_limit(request, scope="login")
     identifier = payload.identifier.lower()
     query = (
@@ -106,7 +111,7 @@ async def login(
         .where(
             or_(
                 and_(
-                    User.role == Role.SBU,
+                    User.role.in_([Role.DCU, Role.SBU]),
                     or_(
                         func.lower(User.username) == identifier,
                         func.lower(User.email) == identifier,
@@ -127,7 +132,8 @@ async def login(
         raise HTTPException(
             status_code=401, detail="Invalid username/ALC code or password"
         )
-    if user.alc and user.alc.status.value != "ACTIVE":
+    # Inactive ALC, or a DCU login not linked to exactly one active DCU: no session.
+    if not account_available(user):
         raise HTTPException(status_code=401, detail="Account unavailable")
     return await _establish_session(user, request, response, db)
 
@@ -187,7 +193,7 @@ async def rotate_refresh(
         .options(*USER_RESPONSE_LOADERS)
         .where(User.id == stored.user_id, User.is_active.is_(True))
     )
-    if not user or (user.alc and user.alc.status.value != "ACTIVE"):
+    if not user or not account_available(user):
         raise HTTPException(status_code=401, detail="Session expired")
     stored.revoked_at = now
     raw, digest = new_refresh_token()

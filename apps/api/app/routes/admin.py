@@ -23,6 +23,8 @@ from app.dependencies import (
 from app.enums import ActivityStatus, ReviewAction, Role
 from app.models import (
     ALC,
+    DCU,
+    RCU,
     SBU,
     Activity,
     ActivityEvidence,
@@ -37,6 +39,7 @@ from app.models import (
 from app.schemas import (
     ActivityOut,
     AlcStatusPatch,
+    DcuOut,
     ReviewDecisionIn,
     SbuIn,
     SbuOut,
@@ -281,7 +284,9 @@ async def get_activity(
 ):
     activity = await admin_activity(db, activity_id)
     alc = await db.scalar(
-        select(ALC).options(selectinload(ALC.sbu)).where(ALC.id == activity.alc_id)
+        select(ALC)
+        .options(selectinload(ALC.sbu).selectinload(SBU.dcu))
+        .where(ALC.id == activity.alc_id)
     )
     return {
         "activity": ActivityOut.model_validate(activity),
@@ -295,6 +300,11 @@ async def get_activity(
         "sbu": (
             {"id": alc.sbu.id, "code": alc.sbu.code, "name": alc.sbu.name}
             if alc.sbu
+            else None
+        ),
+        "dcu": (
+            {"id": alc.sbu.dcu.id, "code": alc.sbu.dcu.code, "name": alc.sbu.dcu.name}
+            if alc.sbu and alc.sbu.dcu
             else None
         ),
     }
@@ -524,6 +534,9 @@ async def update_alc_status(
             select(SBU.id).where(SBU.id == payload.sbu_id)
         ):
             raise HTTPException(status_code=422, detail="Invalid SBU")
+        # Reassignment moves only this pointer: the ALC keeps its id, users, activities,
+        # partners, evidence, reviews and revisions. Scope follows on the next request.
+        changes["previous_sbu_id"] = str(alc.sbu_id) if alc.sbu_id else None
         alc.sbu_id = payload.sbu_id
         changes["sbu_id"] = str(payload.sbu_id) if payload.sbu_id else None
     if not changes:
@@ -729,17 +742,27 @@ async def create_user(
     if payload.role == Role.ALC:
         if not payload.alc_id:
             raise HTTPException(status_code=422, detail="ALC is required")
-        if payload.sbu_id:
-            raise HTTPException(status_code=422, detail="ALC user cannot belong to an SBU")
+        if payload.sbu_id or payload.dcu_id:
+            raise HTTPException(status_code=422, detail="ALC user cannot belong to an SBU or DCU")
     elif payload.role == Role.SBU:
         if not payload.sbu_id:
             raise HTTPException(status_code=422, detail="SBU is required")
-        if payload.alc_id:
-            raise HTTPException(status_code=422, detail="SBU user cannot belong to an ALC")
+        if payload.alc_id or payload.dcu_id:
+            raise HTTPException(status_code=422, detail="SBU user cannot belong to an ALC or DCU")
         if not await db.scalar(select(SBU.id).where(SBU.id == payload.sbu_id)):
             raise HTTPException(status_code=422, detail="Invalid SBU")
-    elif payload.role == Role.ADMIN and (payload.alc_id or payload.sbu_id):
-        raise HTTPException(status_code=422, detail="Admin cannot belong to an ALC or SBU")
+    elif payload.role == Role.DCU:
+        # A DCU login is linked to exactly one DCU and nothing else.
+        if not payload.dcu_id:
+            raise HTTPException(status_code=422, detail="DCU is required")
+        if payload.alc_id or payload.sbu_id:
+            raise HTTPException(status_code=422, detail="DCU user cannot belong to an ALC or SBU")
+        if not await db.scalar(select(DCU.id).where(DCU.id == payload.dcu_id)):
+            raise HTTPException(status_code=422, detail="Invalid DCU")
+    elif payload.role == Role.ADMIN and (payload.alc_id or payload.sbu_id or payload.dcu_id):
+        raise HTTPException(
+            status_code=422, detail="Admin cannot belong to an ALC, SBU or DCU"
+        )
     if await db.scalar(select(User.id).where(User.username == payload.username)):
         raise HTTPException(status_code=409, detail="Username already exists")
     user = User(
@@ -748,6 +771,7 @@ async def create_user(
         role=payload.role,
         alc_id=payload.alc_id if payload.role == Role.ALC else None,
         sbu_id=payload.sbu_id if payload.role == Role.SBU else None,
+        dcu_id=payload.dcu_id if payload.role == Role.DCU else None,
         password_hash=hash_password(payload.password),
         must_change_password=payload.must_change_password,
     )
@@ -793,7 +817,7 @@ async def delete_user(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Permanently delete an ALC/SBU login account only. The ALC/SBU master record and all
+    """Permanently delete an ALC/SBU/DCU login account only. The ALC/SBU master record and all
     historical activities, evidence, reviews, partners, tasks, challenge history and reports
     are preserved (authorship references are detached, not deleted). ADMIN accounts and the
     admin's own account can never be deleted."""
@@ -805,7 +829,12 @@ async def delete_user(
     if user.id == admin.id:
         raise HTTPException(status_code=403, detail="You cannot delete your own account")
 
-    deleted_role, deleted_alc_id, deleted_sbu_id = user.role, user.alc_id, user.sbu_id
+    deleted_role, deleted_alc_id, deleted_sbu_id, deleted_dcu_id = (
+        user.role,
+        user.alc_id,
+        user.sbu_id,
+        user.dcu_id,
+    )
 
     # Session cleanup: revoke every refresh token and drop notifications so the account
     # immediately loses access and an old refresh token can never be reused.
@@ -851,6 +880,7 @@ async def delete_user(
             "deleted_role": deleted_role.value,
             "alc_id": str(deleted_alc_id) if deleted_alc_id else None,
             "sbu_id": str(deleted_sbu_id) if deleted_sbu_id else None,
+            "dcu_id": str(deleted_dcu_id) if deleted_dcu_id else None,
         },
     )
     await db.delete(user)
@@ -862,6 +892,7 @@ async def delete_user(
 async def list_sbus(
     page_data: tuple[int, int] = Depends(pagination),
     search: str | None = None,
+    dcu_id: uuid.UUID | None = None,
     _: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -869,6 +900,8 @@ async def list_sbus(
     filters = []
     if search:
         filters.append(or_(SBU.code.ilike(f"%{search}%"), SBU.name.ilike(f"%{search}%")))
+    if dcu_id is not None:
+        filters.append(SBU.dcu_id == dcu_id)
     total = await db.scalar(select(func.count(SBU.id)).where(*filters)) or 0
     rows = (
         (
@@ -878,11 +911,14 @@ async def list_sbus(
                     SBU.code,
                     SBU.name,
                     SBU.is_active,
+                    SBU.dcu_id,
+                    DCU.code.label("dcu_code"),
                     func.count(ALC.id).label("assigned_alcs"),
                 )
+                .outerjoin(DCU, SBU.dcu_id == DCU.id)
                 .outerjoin(ALC, ALC.sbu_id == SBU.id)
                 .where(*filters)
-                .group_by(SBU.id)
+                .group_by(SBU.id, DCU.id)
                 .order_by(SBU.code)
                 .offset((page - 1) * page_size)
                 .limit(page_size)
@@ -909,7 +945,16 @@ async def create_sbu(
 ):
     if await db.scalar(select(SBU.id).where(func.lower(SBU.code) == payload.code.lower())):
         raise HTTPException(status_code=409, detail="SBU code already exists")
-    sbu = SBU(code=payload.code, name=payload.name, is_active=payload.is_active)
+    if payload.dcu_id is not None and not await db.scalar(
+        select(DCU.id).where(DCU.id == payload.dcu_id)
+    ):
+        raise HTTPException(status_code=422, detail="Invalid DCU")
+    sbu = SBU(
+        code=payload.code,
+        name=payload.name,
+        is_active=payload.is_active,
+        dcu_id=payload.dcu_id,
+    )
     db.add(sbu)
     await db.flush()
     await record_audit(db, "sbu_created", "sbu", sbu.id, admin, request, {"code": sbu.code})
@@ -934,7 +979,10 @@ async def sbu_detail(
     ).mappings().all()
     users_rows = (
         await db.scalars(
-            select(User).where(User.sbu_id == sbu_id, User.role == Role.SBU).order_by(User.username)
+            select(User)
+            .options(*USER_RESPONSE_LOADERS)
+            .where(User.sbu_id == sbu_id, User.role == Role.SBU)
+            .order_by(User.username)
         )
     ).all()
     return {
@@ -955,16 +1003,104 @@ async def update_sbu(
     sbu = await db.get(SBU, sbu_id)
     if not sbu:
         raise HTTPException(status_code=404, detail="SBU not found")
+    changes = payload.model_dump(exclude_none=True, exclude={"dcu_id"})
     if payload.name is not None:
         sbu.name = payload.name
     if payload.is_active is not None:
         sbu.is_active = payload.is_active
-    await record_audit(
-        db, "sbu_updated", "sbu", sbu.id, admin, request, payload.model_dump(exclude_none=True)
-    )
+    if "dcu_id" in payload.model_fields_set:
+        # Reassigning an SBU to another DCU moves only this pointer. The SBU keeps its id and
+        # every ALC, activity, partner, evidence file and review stays attached; DCU access
+        # follows the new hierarchy on the very next request.
+        if payload.dcu_id is not None and not await db.scalar(
+            select(DCU.id).where(DCU.id == payload.dcu_id)
+        ):
+            raise HTTPException(status_code=422, detail="Invalid DCU")
+        changes["dcu_id"] = str(payload.dcu_id) if payload.dcu_id else None
+        changes["previous_dcu_id"] = str(sbu.dcu_id) if sbu.dcu_id else None
+        sbu.dcu_id = payload.dcu_id
+    await record_audit(db, "sbu_updated", "sbu", sbu.id, admin, request, changes)
     await db.commit()
     await db.refresh(sbu)
     return sbu
+
+
+@router.get("/dcus")
+async def list_dcus(_: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Read-only DCU master with its RCU and hierarchy counts (admin only)."""
+    sbu_count = (
+        select(func.count(SBU.id)).where(SBU.dcu_id == DCU.id).correlate(DCU).scalar_subquery()
+    )
+    alc_count = (
+        select(func.count(ALC.id))
+        .join(SBU, ALC.sbu_id == SBU.id)
+        .where(SBU.dcu_id == DCU.id)
+        .correlate(DCU)
+        .scalar_subquery()
+    )
+    rows = (
+        (
+            await db.execute(
+                select(
+                    DCU.id,
+                    DCU.code,
+                    DCU.name,
+                    DCU.is_active,
+                    DCU.rcu_id,
+                    RCU.code.label("rcu_code"),
+                    RCU.name.label("rcu_name"),
+                    sbu_count.label("sbus"),
+                    alc_count.label("alcs"),
+                )
+                .join(RCU, DCU.rcu_id == RCU.id)
+                .order_by(DCU.code)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return {"items": rows, "total": len(rows)}
+
+
+@router.get("/dcus/{dcu_id}")
+async def dcu_detail(
+    dcu_id: uuid.UUID, _: User = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    dcu = await db.get(DCU, dcu_id)
+    if not dcu:
+        raise HTTPException(status_code=404, detail="DCU not found")
+    sbus = (
+        (
+            await db.execute(
+                select(
+                    SBU.id,
+                    SBU.code,
+                    SBU.name,
+                    SBU.is_active,
+                    func.count(ALC.id).label("assigned_alcs"),
+                )
+                .outerjoin(ALC, ALC.sbu_id == SBU.id)
+                .where(SBU.dcu_id == dcu_id)
+                .group_by(SBU.id)
+                .order_by(SBU.code)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    users_rows = (
+        await db.scalars(
+            select(User)
+            .options(*USER_RESPONSE_LOADERS)
+            .where(User.dcu_id == dcu_id, User.role == Role.DCU)
+            .order_by(User.username)
+        )
+    ).all()
+    return {
+        "dcu": DcuOut.model_validate(dcu),
+        "sbus": sbus,
+        "users": [UserOut.model_validate(u) for u in users_rows],
+    }
 
 
 @router.get("/audit-logs")

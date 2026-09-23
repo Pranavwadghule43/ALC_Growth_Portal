@@ -35,12 +35,41 @@ class TimestampMixin:
     )
 
 
+class RCU(Base, TimestampMixin):
+    """Regional unit at the top of the hierarchy: RCU → DCU → SBU → ALC."""
+
+    __tablename__ = "rcus"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    dcus: Mapped[list["DCU"]] = relationship(back_populates="rcu")
+
+
+class DCU(Base, TimestampMixin):
+    __tablename__ = "dcus"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    rcu_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("rcus.id"), index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    rcu: Mapped[RCU] = relationship(back_populates="dcus")
+    sbus: Mapped[list["SBU"]] = relationship(back_populates="dcu")
+    users: Mapped[list["User"]] = relationship(back_populates="dcu")
+
+
 class SBU(Base, TimestampMixin):
     __tablename__ = "sbus"
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # Nullable: an SBU not yet placed in the hierarchy (e.g. the demo "SBU 1") belongs to no
+    # DCU, so no DCU login can reach it (scope fails closed).
+    dcu_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("dcus.id"), nullable=True, index=True
+    )
+    dcu: Mapped[DCU | None] = relationship(back_populates="sbus")
     alcs: Mapped[list["ALC"]] = relationship(back_populates="sbu")
     users: Mapped[list["User"]] = relationship(back_populates="sbu")
 
@@ -73,11 +102,15 @@ class User(Base, TimestampMixin):
     sbu_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("sbus.id"), nullable=True, index=True
     )
+    dcu_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("dcus.id"), nullable=True, index=True
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     alc: Mapped[ALC | None] = relationship(back_populates="users")
     sbu: Mapped["SBU | None"] = relationship(back_populates="users")
+    dcu: Mapped[DCU | None] = relationship(back_populates="users")
 
 
 class RefreshToken(Base):
