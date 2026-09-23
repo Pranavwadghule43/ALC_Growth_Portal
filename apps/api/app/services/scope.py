@@ -22,12 +22,12 @@ auto-correlating the subquery away.
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import ColumnElement, false, select, true
+from sqlalchemy import ColumnElement, and_, false, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute, aliased
 
-from app.enums import Role
-from app.models import ALC, SBU, User
+from app.enums import ActivityStatus, Role
+from app.models import ALC, SBU, Activity, User
 
 # Roles that supervise many ALCs through the portal (review queue, ALC directory, reports).
 SUPERVISOR_ROLES = frozenset({Role.DCU, Role.SBU})
@@ -69,6 +69,21 @@ def alc_scope(user: User, alc_column: InstrumentedAttribute = ALC.id) -> ColumnE
             return false()
         return alc_column == user.alc_id
     return false()
+
+
+def submitted_workflow() -> ColumnElement[bool]:
+    """Activities that have entered the review workflow. A ``DRAFT`` is private to its ALC:
+    supervisors and operational reports only ever see submitted-workflow data."""
+    return Activity.status != ActivityStatus.DRAFT
+
+
+def activity_scope(user: User) -> ColumnElement[bool]:
+    """Activities ``user`` may see: inside its ALC scope, and — for everyone except the
+    owning ALC — never a ``DRAFT``."""
+    clause = alc_scope(user, Activity.alc_id)
+    if user.role == Role.ALC:
+        return clause
+    return and_(clause, submitted_workflow())
 
 
 def sbu_scope(user: User, sbu_column: InstrumentedAttribute = SBU.id) -> ColumnElement[bool]:

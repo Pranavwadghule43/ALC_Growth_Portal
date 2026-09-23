@@ -19,7 +19,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import case, desc, func, or_, select
+from sqlalchemy import and_, case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -30,12 +30,14 @@ from app.dependencies import (
     pagination,
     require_alc,
     require_csrf,
+    require_dcu,
     require_portal_user,
     require_supervisor,
 )
 from app.enums import ActivityStatus, ReviewAction, Role, TaskStatus
 from app.models import (
     ALC,
+    DCU,
     SBU,
     Activity,
     ActivityEvidence,
@@ -48,6 +50,7 @@ from app.models import (
 from app.schemas import (
     ActivityIn,
     ActivityOut,
+    DecisionChangeIn,
     PartnerIn,
     PartnerOut,
     PasswordResetIn,
@@ -55,11 +58,27 @@ from app.schemas import (
     TaskIn,
     TaskOut,
 )
-from app.services.activities import EDITABLE_STATUSES, review_activity, submit_activity
+from app.services.activities import (
+    EDITABLE_STATUSES,
+    FINAL_STATUSES,
+    REVIEWABLE_STATUSES,
+    review_activity,
+    submit_activity,
+)
 from app.services.audit import record_audit
 from app.services.csv_export import safe_csv
+from app.services.rollups import (
+    PENDING_STATUSES,
+    ZERO_ACTIVITY_METRICS,
+    activity_metric_columns,
+    activity_totals,
+    alc_activity_join,
+    partner_activity_stats,
+    sbu_rollup,
+)
 from app.services.scope import (
     accessible_alc_ids,
+    activity_scope,
     alc_scope,
     can_access_alc,
     can_access_sbu,
@@ -142,7 +161,7 @@ async def scoped_activity(
     query = (
         select(Activity)
         .options(*ACTIVITY_LOADERS)
-        .where(Activity.id == activity_id, alc_scope(user, Activity.alc_id))
+        .where(Activity.id == activity_id, activity_scope(user))
     )
     if lock:
         query = query.with_for_update(of=Activity)
@@ -321,133 +340,62 @@ async def alc_dashboard(user: User, db: AsyncSession) -> dict:
 
 
 async def supervisor_dashboard(user: User, db: AsyncSession) -> dict:
-    """Dashboard for DCU and SBU users over every ALC in their hierarchy scope."""
+    """Dashboard for DCU and SBU users over every ALC in their hierarchy scope.
+
+    Metrics use submitted-workflow activities only (drafts stay private to their ALC) and
+    each activity's *current* status. The per-SBU breakdown costs three grouped queries in
+    total, however many SBUs the DCU owns."""
     in_scope = alc_scope(user)
-    assigned = await db.scalar(select(func.count(ALC.id)).where(in_scope)) or 0
-    sbu_count = await db.scalar(select(func.count(SBU.id)).where(sbu_scope(user))) or 0
-    active_alcs = 0
-    partner_count = 0
-    if not assigned:
-        metrics = {
-            "activities": 0,
-            "submitted": 0,
-            "pending": 0,
-            "verified": 0,
-            "corrections": 0,
-            "rejected": 0,
-            "learners": 0,
-            "leads": 0,
-            "admissions": 0,
+    breakdown_data = await sbu_rollup(db, in_scope)
+    sbus = (
+        await db.execute(
+            select(SBU.id, SBU.code, SBU.name, SBU.is_active)
+            .where(sbu_scope(user))
+            .order_by(SBU.code)
+        )
+    ).all()
+    breakdown = []
+    totals = {"alcs": 0, "active_alcs": 0, "inactive_alcs": 0, "partners": 0,
+              **ZERO_ACTIVITY_METRICS}
+    for sbu_id, code, name, is_active in sbus:
+        row = breakdown_data.get(sbu_id) or {
+            "alcs": 0, "active_alcs": 0, "inactive_alcs": 0, "partners": 0,
+            **ZERO_ACTIVITY_METRICS,
         }
-        recent: list = []
-    else:
-        active_alcs = (
-            await db.scalar(
-                select(func.count(ALC.id)).where(in_scope, ALC.status == "ACTIVE")
-            )
-        ) or 0
-        partner_count = (
-            await db.scalar(
-                select(func.count(Partner.id)).where(alc_scope(user, Partner.alc_id))
-            )
-        ) or 0
-        base = alc_scope(user, Activity.alc_id)
-        row = (
-            await db.execute(
-                select(
-                    func.count(case((Activity.status != ActivityStatus.DRAFT, 1))).label(
-                        "activities"
-                    ),
-                    func.count(case((Activity.status == ActivityStatus.SUBMITTED, 1))).label(
-                        "submitted"
-                    ),
-                    func.count(
-                        case(
-                            (
-                                Activity.status.in_(
-                                    [
-                                        ActivityStatus.SUBMITTED,
-                                        ActivityStatus.RESUBMITTED,
-                                        ActivityStatus.UNDER_REVIEW,
-                                    ]
-                                ),
-                                1,
-                            )
-                        )
-                    ).label("pending"),
-                    func.count(case((Activity.status == ActivityStatus.VERIFIED, 1))).label(
-                        "verified"
-                    ),
-                    func.count(
-                        case((Activity.status == ActivityStatus.CORRECTION_REQUIRED, 1))
-                    ).label("corrections"),
-                    func.count(case((Activity.status == ActivityStatus.REJECTED, 1))).label(
-                        "rejected"
-                    ),
-                    func.coalesce(
-                        func.sum(
-                            case(
-                                (
-                                    Activity.status == ActivityStatus.VERIFIED,
-                                    Activity.learners_reached,
-                                ),
-                                else_=0,
-                            )
-                        ),
-                        0,
-                    ).label("learners"),
-                    func.coalesce(
-                        func.sum(
-                            case(
-                                (
-                                    Activity.status == ActivityStatus.VERIFIED,
-                                    Activity.leads_generated,
-                                ),
-                                else_=0,
-                            )
-                        ),
-                        0,
-                    ).label("leads"),
-                    func.coalesce(
-                        func.sum(
-                            case(
-                                (
-                                    Activity.status == ActivityStatus.VERIFIED,
-                                    Activity.admissions_generated,
-                                ),
-                                else_=0,
-                            )
-                        ),
-                        0,
-                    ).label("admissions"),
-                ).where(base)
-            )
-        ).mappings().one()
-        metrics = dict(row)
-        rows = (
-            await db.execute(
-                select(Activity, ALC)
-                .join(ALC, Activity.alc_id == ALC.id)
-                .options(*ACTIVITY_LOADERS)
-                .where(base, Activity.status != ActivityStatus.DRAFT)
-                .order_by(desc(Activity.submitted_at), desc(Activity.updated_at))
-                .limit(8)
-            )
-        ).all()
-        recent = [
-            {
-                "activity": ActivityOut.model_validate(activity),
-                "alc": {"id": alc.id, "alc_code": alc.alc_code, "alc_name": alc.alc_name},
-            }
-            for activity, alc in rows
-        ]
+        breakdown.append({"id": sbu_id, "code": code, "name": name, "is_active": is_active, **row})
+        for key in totals:
+            totals[key] += row[key]
+    rows = (
+        await db.execute(
+            select(Activity, ALC, SBU.code)
+            .join(ALC, Activity.alc_id == ALC.id)
+            .outerjoin(SBU, ALC.sbu_id == SBU.id)
+            .options(*ACTIVITY_LOADERS)
+            .where(activity_scope(user))
+            .order_by(desc(Activity.submitted_at), desc(Activity.updated_at))
+            .limit(8)
+        )
+    ).all()
+    recent = [
+        {
+            "activity": ActivityOut.model_validate(activity),
+            "alc": {"id": alc.id, "alc_code": alc.alc_code, "alc_name": alc.alc_name},
+            "sbu_code": sbu_code,
+        }
+        for activity, alc, sbu_code in rows
+    ]
+    unit = None
+    if user.role == Role.DCU and user.dcu is not None:
+        unit = {"type": "DCU", "id": user.dcu.id, "code": user.dcu.code, "name": user.dcu.name}
+    elif user.role == Role.SBU and user.sbu is not None:
+        unit = {"type": "SBU", "id": user.sbu.id, "code": user.sbu.code, "name": user.sbu.name}
     return {
         "role": user.role.value,
-        "sbus": sbu_count,
-        "assigned_alcs": assigned,
-        "active_alcs": active_alcs,
-        "partners": partner_count,
-        **metrics,
+        "unit": unit,
+        "sbus": len(sbus),
+        "assigned_alcs": totals.pop("alcs"),
+        **totals,
+        "sbu_breakdown": breakdown,
         "recent_activities": recent,
     }
 
@@ -476,7 +424,7 @@ async def list_activities(
     db: AsyncSession = Depends(get_db),
 ):
     page, page_size = page_data
-    filters = [alc_scope(user, Activity.alc_id)]
+    filters = [activity_scope(user)]
     if alc_id is not None:
         await require_alc_in_scope(db, user, alc_id)
         filters.append(Activity.alc_id == alc_id)
@@ -645,7 +593,7 @@ async def scoped_evidence(
         .join(Activity)
         .where(
             ActivityEvidence.id == evidence_id,
-            alc_scope(user, Activity.alc_id),
+            activity_scope(user),
             ActivityEvidence.is_active.is_(True),
         )
     )
@@ -899,49 +847,66 @@ async def mark_read(
 # --------------------------------------------------------------------------- #
 # Supervisor (DCU / SBU): SBU and ALC directory, ALC detail, partners
 # --------------------------------------------------------------------------- #
+def dcu_brief(dcu) -> dict | None:
+    return {"id": dcu.id, "code": dcu.code, "name": dcu.name} if dcu else None
+
+
 @router.get("/sbus")
 async def supervisor_sbus(
     user: User = Depends(require_supervisor), db: AsyncSession = Depends(get_db)
 ):
-    """SBUs in the caller's scope: every SBU under a DCU user's DCU, or an SBU user's own."""
-    alc_count = (
-        select(func.count(ALC.id)).where(ALC.sbu_id == SBU.id).correlate(SBU).scalar_subquery()
-    )
-    rows = (
-        (
-            await db.execute(
-                select(
-                    SBU.id,
-                    SBU.code,
-                    SBU.name,
-                    SBU.is_active,
-                    SBU.dcu_id,
-                    alc_count.label("assigned_alcs"),
-                )
-                .where(sbu_scope(user))
-                .order_by(SBU.code)
-            )
+    """SBUs in the caller's scope (every SBU under a DCU user's DCU, or an SBU user's own),
+    each with ALC, partner and activity rollups from three grouped queries."""
+    sbus = (
+        await db.scalars(
+            select(SBU).options(selectinload(SBU.dcu)).where(sbu_scope(user)).order_by(SBU.code)
         )
-        .mappings()
-        .all()
-    )
-    return {"items": rows, "total": len(rows)}
+    ).all()
+    rollup = await sbu_rollup(db, alc_scope(user))
+    empty = {"alcs": 0, "active_alcs": 0, "inactive_alcs": 0, "partners": 0,
+             **ZERO_ACTIVITY_METRICS}
+    items = []
+    for sbu in sbus:
+        stats = rollup.get(sbu.id, empty)
+        items.append(
+            {
+                "id": sbu.id,
+                "code": sbu.code,
+                "name": sbu.name,
+                "is_active": sbu.is_active,
+                "dcu_id": sbu.dcu_id,
+                "dcu": dcu_brief(sbu.dcu),
+                **stats,
+                "assigned_alcs": stats["alcs"],
+            }
+        )
+    return {"items": items, "total": len(items)}
 
 
 @router.get("/sbus/{sbu_id}")
 async def supervisor_sbu_detail(
     sbu_id: uuid.UUID, user: User = Depends(require_supervisor), db: AsyncSession = Depends(get_db)
 ):
+    """One in-scope SBU: identity, DCU, ALC / partner / activity totals, and its ALCs.
+
+    The ``alcs`` list is a lightweight id/code/name/status list bounded by one SBU; the
+    paginated, per-ALC statistics table is ``GET /portal/alcs?sbu_id=…``."""
     sbu = await db.scalar(
         select(SBU).options(selectinload(SBU.dcu)).where(SBU.id == sbu_id, sbu_scope(user))
     )
     if not sbu:
         raise HTTPException(status_code=404, detail="SBU not found")
+    in_sbu = and_(ALC.sbu_id == sbu.id, alc_scope(user))
+    stats = (await sbu_rollup(db, in_sbu)).get(
+        sbu.id,
+        {"alcs": 0, "active_alcs": 0, "inactive_alcs": 0, "partners": 0,
+         **ZERO_ACTIVITY_METRICS},
+    )
     alcs_rows = (
         (
             await db.execute(
                 select(ALC.id, ALC.alc_code, ALC.alc_name, ALC.status)
-                .where(ALC.sbu_id == sbu.id, alc_scope(user))
+                .where(in_sbu)
                 .order_by(ALC.alc_code)
             )
         )
@@ -954,12 +919,9 @@ async def supervisor_sbu_detail(
             "code": sbu.code,
             "name": sbu.name,
             "is_active": sbu.is_active,
-            "dcu": (
-                {"id": sbu.dcu.id, "code": sbu.dcu.code, "name": sbu.dcu.name}
-                if sbu.dcu
-                else None
-            ),
+            "dcu": dcu_brief(sbu.dcu),
         },
+        "stats": stats,
         "alcs": alcs_rows,
     }
 
@@ -973,6 +935,10 @@ async def supervisor_alcs(
     user: User = Depends(require_supervisor),
     db: AsyncSession = Depends(get_db),
 ):
+    """Paginated in-scope ALC directory with SBU, DCU and per-ALC statistics.
+
+    ``search`` matches ALC code or name; ``sbu_id`` and ``status`` narrow the scope (an
+    out-of-scope ``sbu_id`` is 404). Counts use submitted-workflow activities only."""
     page, page_size = page_data
     filters = [alc_scope(user)]
     if sbu_id is not None:
@@ -999,24 +965,19 @@ async def supervisor_alcs(
                     ALC.status,
                     ALC.sbu_id,
                     SBU.code.label("sbu_code"),
+                    SBU.name.label("sbu_name"),
+                    DCU.code.label("dcu_code"),
+                    DCU.name.label("dcu_name"),
                     func.count(Activity.id).label("activities"),
                     func.count(case((Activity.status == ActivityStatus.VERIFIED, 1))).label(
                         "verified"
                     ),
+                    func.count(case((Activity.status.in_(PENDING_STATUSES), 1))).label(
+                        "pending"
+                    ),
                     func.count(
-                        case(
-                            (
-                                Activity.status.in_(
-                                    [
-                                        ActivityStatus.SUBMITTED,
-                                        ActivityStatus.RESUBMITTED,
-                                        ActivityStatus.UNDER_REVIEW,
-                                    ]
-                                ),
-                                1,
-                            )
-                        )
-                    ).label("pending"),
+                        case((Activity.status == ActivityStatus.CORRECTION_REQUIRED, 1))
+                    ).label("corrections"),
                     func.coalesce(
                         func.sum(
                             case(
@@ -1033,9 +994,10 @@ async def supervisor_alcs(
                     func.max(Activity.activity_date).label("last_activity"),
                 )
                 .outerjoin(SBU, ALC.sbu_id == SBU.id)
-                .outerjoin(Activity, ALC.id == Activity.alc_id)
+                .outerjoin(DCU, SBU.dcu_id == DCU.id)
+                .outerjoin(Activity, alc_activity_join())
                 .where(*filters)
-                .group_by(ALC.id, SBU.id)
+                .group_by(ALC.id, SBU.id, DCU.id)
                 .order_by(ALC.alc_code)
                 .offset((page - 1) * page_size)
                 .limit(page_size)
@@ -1052,39 +1014,104 @@ async def supervisor_alcs(
         "pages": math.ceil(total / page_size) if total else 0,
     }
 
+
+@router.get("/lookups/alcs")
+async def supervisor_alc_options(
+    sbu_id: uuid.UUID | None = None,
+    user: User = Depends(require_supervisor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lightweight in-scope ALC options (id, code, name, SBU) for filter dropdowns.
+
+    Bounded by the caller's scope (one DCU or one SBU) and narrowed by ``sbu_id``, so a
+    dropdown never needs the full directory statistics or another DCU's ALCs."""
+    filters = [alc_scope(user)]
+    if sbu_id is not None:
+        await require_sbu_in_scope(db, user, sbu_id)
+        filters.append(ALC.sbu_id == sbu_id)
+    rows = (
+        (
+            await db.execute(
+                select(
+                    ALC.id, ALC.alc_code, ALC.alc_name, ALC.sbu_id, SBU.code.label("sbu_code")
+                )
+                .outerjoin(SBU, ALC.sbu_id == SBU.id)
+                .where(*filters)
+                .order_by(ALC.alc_code)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return {"items": rows, "total": len(rows)}
+
+
 @router.get("/alcs/{alc_id}")
 async def supervisor_alc_detail(
     alc_id: uuid.UUID, user: User = Depends(require_supervisor), db: AsyncSession = Depends(get_db)
 ):
-    alc = await scoped_alc(db, user, alc_id)
+    """One in-scope ALC with its SBU/DCU, activity and partner summaries, the latest 100
+    submitted-workflow activities and every activity awaiting correction. Read-only: the
+    ALC master record is administered by Admin only."""
+    alc = await db.scalar(
+        select(ALC)
+        .options(selectinload(ALC.sbu).selectinload(SBU.dcu))
+        .where(ALC.id == alc_id, alc_scope(user))
+    )
+    if not alc:
+        raise HTTPException(status_code=404, detail="ALC not found")
+    visible = [Activity.alc_id == alc.id, activity_scope(user)]
+    summary = await activity_totals(db, *visible)
     activities = (
         await db.scalars(
             select(Activity)
             .options(*ACTIVITY_LOADERS)
-            .where(Activity.alc_id == alc_id)
+            .where(*visible)
             .order_by(desc(Activity.updated_at))
             .limit(100)
         )
     ).all()
-    partners_list = (
+    corrections = (
         await db.scalars(
-            select(Partner).where(Partner.alc_id == alc_id).order_by(Partner.partner_name)
+            select(Activity)
+            .options(*ACTIVITY_LOADERS)
+            .where(*visible, Activity.status == ActivityStatus.CORRECTION_REQUIRED)
+            .order_by(desc(Activity.updated_at))
         )
     ).all()
+    partner_activities, partner_last = partner_activity_stats()
+    partner_rows = (
+        await db.execute(
+            select(Partner, partner_activities, partner_last)
+            .where(Partner.alc_id == alc.id)
+            .order_by(Partner.partner_name)
+        )
+    ).all()
+    sbu = alc.sbu
     return {
         "alc": {
             "id": alc.id,
             "alc_code": alc.alc_code,
             "alc_name": alc.alc_name,
             "status": alc.status,
-            "sbu": (
-                {"id": alc.sbu.id, "code": alc.sbu.code, "name": alc.sbu.name}
-                if alc.sbu
-                else None
-            ),
+            "sbu": ({"id": sbu.id, "code": sbu.code, "name": sbu.name} if sbu else None),
+            "dcu": dcu_brief(sbu.dcu) if sbu else None,
+        },
+        "summary": {
+            **summary,
+            "partners": len(partner_rows),
+            "active_partners": sum(1 for p, _, _ in partner_rows if p.status == "ACTIVE"),
         },
         "activities": [ActivityOut.model_validate(x) for x in activities],
-        "partners": partners_list,
+        "correction_required": [ActivityOut.model_validate(x) for x in corrections],
+        "partners": [
+            {
+                **PartnerOut.model_validate(partner).model_dump(),
+                "activity_count": count,
+                "last_activity": last,
+            }
+            for partner, count, last in partner_rows
+        ],
     }
 
 
@@ -1119,55 +1146,109 @@ async def supervisor_reset_alc_password(
     return {"message": "Password reset", "user_id": target.id}
 
 
+def partner_rows_query(filters: list):
+    activity_count, last_activity = partner_activity_stats()
+    return (
+        select(
+            Partner,
+            ALC.alc_code,
+            ALC.alc_name,
+            SBU.id.label("sbu_id"),
+            SBU.code.label("sbu_code"),
+            activity_count.label("activity_count"),
+            last_activity.label("last_activity"),
+        )
+        .join(ALC, Partner.alc_id == ALC.id)
+        .outerjoin(SBU, ALC.sbu_id == SBU.id)
+        .where(*filters)
+    )
+
+
+def partner_row(partner, alc_code, alc_name, sbu_id, sbu_code, activities, last) -> dict:
+    return {
+        "id": partner.id,
+        "alc_id": partner.alc_id,
+        "alc_code": alc_code,
+        "alc_name": alc_name,
+        "sbu_id": sbu_id,
+        "sbu_code": sbu_code,
+        "partner_name": partner.partner_name,
+        "partner_type": partner.partner_type,
+        "ecosystem": partner.ecosystem,
+        "contact_person": partner.contact_person,
+        "phone": partner.phone,
+        "email": partner.email,
+        "location": partner.location,
+        "status": partner.status,
+        "activity_count": activities,
+        "last_activity": last,
+    }
+
+
 @router.get("/sbu/partners")
 async def supervisor_partners(
     user: User = Depends(require_supervisor), db: AsyncSession = Depends(get_db)
 ):
     """Partners across the caller's in-scope ALCs, with activity count and last activity."""
-    activity_count = (
-        select(func.count(Activity.id))
-        .where(Activity.partner_id == Partner.id)
-        .correlate(Partner)
-        .scalar_subquery()
-    )
-    last_activity = (
-        select(func.max(Activity.activity_date))
-        .where(Activity.partner_id == Partner.id)
-        .correlate(Partner)
-        .scalar_subquery()
-    )
     rows = (
         await db.execute(
-            select(
-                Partner,
-                ALC.alc_code,
-                ALC.alc_name,
-                activity_count.label("activity_count"),
-                last_activity.label("last_activity"),
-            )
-            .join(ALC, Partner.alc_id == ALC.id)
-            .where(alc_scope(user, Partner.alc_id))
-            .order_by(Partner.partner_name)
+            partner_rows_query([alc_scope(user, Partner.alc_id)]).order_by(Partner.partner_name)
         )
     ).all()
-    return [
-        {
-            "id": partner.id,
-            "alc_id": partner.alc_id,
-            "alc_code": alc_code,
-            "alc_name": alc_name,
-            "partner_name": partner.partner_name,
-            "partner_type": partner.partner_type,
-            "ecosystem": partner.ecosystem,
-            "contact_person": partner.contact_person,
-            "phone": partner.phone,
-            "email": partner.email,
-            "status": partner.status,
-            "activity_count": activities,
-            "last_activity": last,
-        }
-        for partner, alc_code, alc_name, activities, last in rows
-    ]
+    return [partner_row(*row) for row in rows]
+
+
+@router.get("/partner-directory")
+async def supervisor_partner_directory(
+    page_data: tuple[int, int] = Depends(pagination),
+    sbu_id: uuid.UUID | None = None,
+    alc_id: uuid.UUID | None = None,
+    search: str | None = None,
+    partner_type: str | None = None,
+    user: User = Depends(require_supervisor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Server-side paginated and filtered partner directory for supervisors.
+
+    ``partner_type`` is the partner's collaboration type; ``search`` matches the partner
+    name. SBU / ALC filters only narrow the caller's scope (out-of-scope values 404)."""
+    page, page_size = page_data
+    filters = [alc_scope(user, Partner.alc_id)]
+    if sbu_id is not None:
+        await require_sbu_in_scope(db, user, sbu_id)
+        filters.append(Partner.alc_id.in_(alcs_of_sbu(sbu_id)))
+    if alc_id is not None:
+        await require_alc_in_scope(db, user, alc_id)
+        filters.append(Partner.alc_id == alc_id)
+    if search:
+        filters.append(Partner.partner_name.ilike(f"%{search}%"))
+    if partner_type:
+        filters.append(Partner.partner_type == partner_type)
+    total = await db.scalar(select(func.count(Partner.id)).where(*filters)) or 0
+    rows = (
+        await db.execute(
+            partner_rows_query(filters)
+            .order_by(Partner.partner_name, Partner.id)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+    types = (
+        await db.scalars(
+            select(Partner.partner_type)
+            .where(alc_scope(user, Partner.alc_id))
+            .distinct()
+            .order_by(Partner.partner_type)
+        )
+    ).all()
+    return {
+        "items": [partner_row(*row) for row in rows],
+        "partner_types": types,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "pages": math.ceil(total / page_size) if total else 0,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -1188,7 +1269,7 @@ async def supervisor_verification_queue(
     db: AsyncSession = Depends(get_db),
 ):
     page, page_size = page_data
-    filters = [alc_scope(user, Activity.alc_id)]
+    filters = [activity_scope(user)]
     if alc_id is not None:
         await require_alc_in_scope(db, user, alc_id)
         filters.append(Activity.alc_id == alc_id)
@@ -1196,15 +1277,7 @@ async def supervisor_verification_queue(
         await require_sbu_in_scope(db, user, sbu_id)
         filters.append(Activity.alc_id.in_(alcs_of_sbu(sbu_id)))
     if queue_only and not status:
-        filters.append(
-            Activity.status.in_(
-                [
-                    ActivityStatus.SUBMITTED,
-                    ActivityStatus.RESUBMITTED,
-                    ActivityStatus.UNDER_REVIEW,
-                ]
-            )
-        )
+        filters.append(Activity.status.in_(PENDING_STATUSES))
     elif status:
         filters.append(Activity.status == status)
     if activity_type:
@@ -1229,11 +1302,12 @@ async def supervisor_verification_queue(
     )
     rows = (
         await db.execute(
-            select(Activity, ALC)
+            select(Activity, ALC, SBU.id, SBU.code)
             .join(ALC, Activity.alc_id == ALC.id)
+            .outerjoin(SBU, ALC.sbu_id == SBU.id)
             .options(*ACTIVITY_LOADERS)
             .where(*filters)
-            .order_by(desc(Activity.submitted_at), desc(Activity.updated_at))
+            .order_by(desc(Activity.submitted_at), desc(Activity.updated_at), Activity.id)
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
@@ -1248,8 +1322,9 @@ async def supervisor_verification_queue(
                     "alc_name": alc.alc_name,
                     "status": alc.status,
                 },
+                "sbu": {"id": sbu_id, "code": sbu_code} if sbu_id else None,
             }
-            for activity, alc in rows
+            for activity, alc, sbu_id, sbu_code in rows
         ],
         "page": page,
         "page_size": page_size,
@@ -1265,7 +1340,12 @@ async def supervisor_review_detail(
     db: AsyncSession = Depends(get_db),
 ):
     activity = await scoped_activity(db, user, activity_id)
-    alc = await db.get(ALC, activity.alc_id)
+    alc = await db.scalar(
+        select(ALC)
+        .options(selectinload(ALC.sbu).selectinload(SBU.dcu))
+        .where(ALC.id == activity.alc_id)
+    )
+    sbu = alc.sbu
     return {
         "activity": ActivityOut.model_validate(activity),
         "alc": {
@@ -1274,6 +1354,11 @@ async def supervisor_review_detail(
             "alc_name": alc.alc_name,
             "status": alc.status,
         },
+        "sbu": {"id": sbu.id, "code": sbu.code, "name": sbu.name} if sbu else None,
+        "dcu": dcu_brief(sbu.dcu) if sbu else None,
+        "can_review": activity.status in REVIEWABLE_STATUSES,
+        # Only a DCU (and Admin, on its own routes) may override a final decision.
+        "can_change_decision": user.role == Role.DCU and activity.status in FINAL_STATUSES,
     }
 
 
@@ -1336,9 +1421,184 @@ async def supervisor_reject(
     return await supervisor_decision(activity_id, payload, ReviewAction.REJECT, request, user, db)
 
 
+@router.post("/activities/{activity_id}/change-decision", response_model=ActivityOut)
+async def dcu_change_decision(
+    activity_id: uuid.UUID,
+    payload: DecisionChangeIn,
+    request: Request,
+    user: User = Depends(require_dcu),
+    db: AsyncSession = Depends(get_db),
+):
+    """DCU override of a final decision (VERIFIED / REJECTED) inside its own DCU.
+
+    The reason is mandatory for every target decision. A new review row is appended and
+    marked as a decision change; earlier reviews are never altered, and metrics follow the
+    activity's new current status. SBU users cannot reach this endpoint."""
+    activity = await scoped_activity(db, user, activity_id, lock=True)
+    previous = activity.status
+    await review_activity(
+        db, activity, user, payload.decision, payload.remark, change_decision=True
+    )
+    await notify_sbu_reviewers_of_change(db, activity, previous)
+    await record_audit(
+        db,
+        "decision_changed",
+        "activity",
+        activity.id,
+        user,
+        request,
+        {
+            "previous_status": previous.value,
+            "new_status": activity.status.value,
+            "remark": payload.remark,
+            "alc_id": str(activity.alc_id),
+            **actor_scope(user),
+        },
+    )
+    await db.commit()
+    db.expire(activity, ["reviews", "revisions"])
+    return await scoped_activity(db, user, activity.id)
+
+
+async def notify_sbu_reviewers_of_change(db: AsyncSession, activity: Activity, previous) -> None:
+    """Tell the ALC's SBU reviewers that a final decision on one of their ALCs changed."""
+    sbu_id = await db.scalar(select(ALC.sbu_id).where(ALC.id == activity.alc_id))
+    if sbu_id is None:
+        return
+    reviewers = (
+        await db.scalars(
+            select(User).where(
+                User.is_active.is_(True), User.role == Role.SBU, User.sbu_id == sbu_id
+            )
+        )
+    ).all()
+    for reviewer in reviewers:
+        db.add(
+            Notification(
+                user_id=reviewer.id,
+                title="Review decision changed",
+                message=(
+                    f"{activity.activity_number}: {previous.value.replace('_', ' ').lower()}"
+                    f" → {activity.status.value.replace('_', ' ').lower()}"
+                ),
+                type="DECISION_CHANGED",
+                entity_type="activity",
+                entity_id=str(activity.id),
+            )
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Reports (role-scoped)
 # --------------------------------------------------------------------------- #
+def csv_response(header: list[str], rows, filename: str) -> StreamingResponse:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(header)
+    for row in rows:
+        writer.writerow([safe_csv(value) for value in row])
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+async def report_scope(
+    db: AsyncSession,
+    user: User,
+    sbu_id: uuid.UUID | None,
+    alc_id: uuid.UUID | None,
+    date_from: date | None,
+    date_to: date | None,
+) -> tuple[list, list]:
+    """(ALC filters, activity filters) for a report, narrowing — never widening — the
+    caller's scope. Out-of-scope SBU / ALC filters are 404."""
+    alc_filters = [alc_scope(user)]
+    if sbu_id is not None:
+        await require_sbu_in_scope(db, user, sbu_id)
+        alc_filters.append(ALC.sbu_id == sbu_id)
+    if alc_id is not None:
+        await require_alc_in_scope(db, user, alc_id)
+        alc_filters.append(ALC.id == alc_id)
+    activity_filters = []
+    if date_from:
+        activity_filters.append(Activity.activity_date >= date_from)
+    if date_to:
+        activity_filters.append(Activity.activity_date <= date_to)
+    return alc_filters, activity_filters
+
+
+async def sbu_performance_rows(
+    db: AsyncSession, user: User, alc_filters: list, activity_filters: list
+) -> list[dict]:
+    sbus = (
+        await db.execute(
+            select(SBU.id, SBU.code, SBU.name).where(sbu_scope(user)).order_by(SBU.code)
+        )
+    ).all()
+    rollup = await sbu_rollup(db, and_(*alc_filters), activity_filters)
+    rows = []
+    for sbu_id, code, name in sbus:
+        stats = rollup.get(sbu_id)
+        if stats is None:
+            continue  # filtered out (another SBU or ALC selected)
+        rows.append({"sbu_id": sbu_id, "sbu_code": code, "sbu_name": name, **stats})
+    return rows
+
+
+@router.get("/reports/sbu-summary")
+async def report_sbu_summary(
+    sbu_id: uuid.UUID | None = None,
+    alc_id: uuid.UUID | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    user: User = Depends(require_supervisor),
+    db: AsyncSession = Depends(get_db),
+):
+    """SBU-wise performance (ALCs, partners, status counts and verified learner reach,
+    leads, admissions) over the caller's scope, for on-screen reporting."""
+    alc_filters, activity_filters = await report_scope(
+        db, user, sbu_id, alc_id, date_from, date_to
+    )
+    rows = await sbu_performance_rows(db, user, alc_filters, activity_filters)
+    totals = {key: sum(r[key] for r in rows) for key in (
+        "alcs", "active_alcs", "partners", *ZERO_ACTIVITY_METRICS
+    )}
+    return {"items": rows, "totals": totals}
+
+
+@router.get("/reports/sbu-performance.csv")
+async def export_sbu_performance(
+    sbu_id: uuid.UUID | None = None,
+    alc_id: uuid.UUID | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    user: User = Depends(require_supervisor),
+    db: AsyncSession = Depends(get_db),
+):
+    alc_filters, activity_filters = await report_scope(
+        db, user, sbu_id, alc_id, date_from, date_to
+    )
+    rows = await sbu_performance_rows(db, user, alc_filters, activity_filters)
+    return csv_response(
+        [
+            "SBU Code", "SBU Name", "ALCs", "Active ALCs", "Partners", "Submitted Activities",
+            "Pending", "Correction Required", "Resubmitted", "Verified", "Rejected",
+            "Verified Learners", "Verified Leads", "Verified Admissions",
+        ],
+        (
+            [
+                r["sbu_code"], r["sbu_name"], r["alcs"], r["active_alcs"], r["partners"],
+                r["activities"], r["pending"], r["corrections"], r["resubmitted"],
+                r["verified"], r["rejected"], r["learners"], r["leads"], r["admissions"],
+            ]
+            for r in rows
+        ),
+        "sbu-performance.csv",
+    )
+
+
 @router.get("/reports/activities.csv")
 async def export_activities(
     date_from: date | None = None,
@@ -1351,7 +1611,9 @@ async def export_activities(
     user: User = Depends(require_portal_user),
     db: AsyncSession = Depends(get_db),
 ):
-    filters = [alc_scope(user, Activity.alc_id)]
+    """ALC-wise activity report. ALC users export their own activities (drafts included);
+    supervisors export submitted-workflow activities only."""
+    filters = [activity_scope(user)]
     if alc_id is not None:
         await require_alc_in_scope(db, user, alc_id)
         filters.append(Activity.alc_id == alc_id)
@@ -1370,56 +1632,35 @@ async def export_activities(
         filters.append(Activity.activity_date <= date_to)
     rows = (
         await db.execute(
-            select(Activity, ALC)
+            select(Activity, ALC, SBU.code)
             .join(ALC, Activity.alc_id == ALC.id)
+            .outerjoin(SBU, ALC.sbu_id == SBU.id)
             .where(*filters)
             .order_by(desc(Activity.activity_date))
         )
     ).all()
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(
+    return csv_response(
         [
-            "Activity Number",
-            "ALC Code",
-            "ALC Name",
-            "Date",
-            "Type",
-            "Ecosystem",
-            "Status",
-            "Learners",
-            "Leads",
-            "Admissions",
-        ]
-    )
-    for activity, alc in rows:
-        writer.writerow(
+            "Activity Number", "ALC Code", "ALC Name", "SBU", "Date", "Type", "Ecosystem",
+            "Status", "Learners", "Leads", "Admissions",
+        ],
+        (
             [
-                safe_csv(value)
-                for value in [
-                    activity.activity_number,
-                    alc.alc_code,
-                    alc.alc_name,
-                    activity.activity_date,
-                    activity.activity_type,
-                    activity.ecosystem,
-                    activity.status.value,
-                    activity.learners_reached,
-                    activity.leads_generated,
-                    activity.admissions_generated,
-                ]
+                activity.activity_number, alc.alc_code, alc.alc_name, sbu_code or "",
+                activity.activity_date, activity.activity_type, activity.ecosystem,
+                activity.status.value, activity.learners_reached, activity.leads_generated,
+                activity.admissions_generated,
             ]
-        )
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=portal-activities.csv"},
+            for activity, alc, sbu_code in rows
+        ),
+        "portal-activities.csv",
     )
 
 
 @router.get("/reports/partners.csv")
 async def export_partners(
     alc_id: uuid.UUID | None = None,
+    sbu_id: uuid.UUID | None = None,
     user: User = Depends(require_portal_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1428,189 +1669,75 @@ async def export_partners(
     if alc_id is not None:
         await require_alc_in_scope(db, user, alc_id)
         filters.append(Partner.alc_id == alc_id)
-    activity_count = (
-        select(func.count(Activity.id))
-        .where(Activity.partner_id == Partner.id)
-        .correlate(Partner)
-        .scalar_subquery()
-    )
-    last_activity = (
-        select(func.max(Activity.activity_date))
-        .where(Activity.partner_id == Partner.id)
-        .correlate(Partner)
-        .scalar_subquery()
-    )
+    if sbu_id is not None:
+        await require_sbu_in_scope(db, user, sbu_id)
+        filters.append(Partner.alc_id.in_(alcs_of_sbu(sbu_id)))
     rows = (
-        await db.execute(
-            select(
-                Partner,
-                ALC.alc_code,
-                ALC.alc_name,
-                activity_count.label("activity_count"),
-                last_activity.label("last_activity"),
-            )
-            .join(ALC, Partner.alc_id == ALC.id)
-            .where(*filters)
-            .order_by(ALC.alc_code, Partner.partner_name)
-        )
+        await db.execute(partner_rows_query(filters).order_by(ALC.alc_code, Partner.partner_name))
     ).all()
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(
+    return csv_response(
         [
-            "ALC Code",
-            "ALC Name",
-            "Partner",
-            "Type",
-            "Ecosystem",
-            "Contact",
-            "Phone",
-            "Email",
-            "Status",
-            "Activities",
-            "Last Activity",
-        ]
-    )
-    for partner, alc_code, alc_name, activities, last in rows:
-        writer.writerow(
+            "ALC Code", "ALC Name", "SBU", "Partner", "Type", "Ecosystem", "Contact", "Phone",
+            "Email", "Status", "Activities", "Last Activity",
+        ],
+        (
             [
-                safe_csv(value)
-                for value in [
-                    alc_code,
-                    alc_name,
-                    partner.partner_name,
-                    partner.partner_type,
-                    partner.ecosystem,
-                    partner.contact_person or "",
-                    partner.phone or "",
-                    partner.email or "",
-                    partner.status,
-                    activities,
-                    last or "",
-                ]
+                alc_code, alc_name, sbu_code or "", partner.partner_name, partner.partner_type,
+                partner.ecosystem, partner.contact_person or "", partner.phone or "",
+                partner.email or "", partner.status, activities, last or "",
             ]
-        )
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=portal-partners.csv"},
+            for partner, alc_code, alc_name, _sbu_id, sbu_code, activities, last in rows
+        ),
+        "portal-partners.csv",
     )
 
 
 @router.get("/reports/verification-status.csv")
 async def export_verification_status(
+    sbu_id: uuid.UUID | None = None,
+    alc_id: uuid.UUID | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
     user: User = Depends(require_portal_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Per-ALC verification-status summary scoped to the caller's ALCs."""
+    """Per-ALC verification-status summary (current statuses, verified learner reach,
+    leads and admissions) scoped to the caller's ALCs; drafts are never counted."""
+    alc_filters, activity_filters = await report_scope(
+        db, user, sbu_id, alc_id, date_from, date_to
+    )
     rows = (
         (
             await db.execute(
                 select(
                     ALC.alc_code,
                     ALC.alc_name,
-                    func.count(case((Activity.status != ActivityStatus.DRAFT, 1))).label(
-                        "submitted"
-                    ),
-                    func.count(
-                        case(
-                            (
-                                Activity.status.in_(
-                                    [
-                                        ActivityStatus.SUBMITTED,
-                                        ActivityStatus.RESUBMITTED,
-                                        ActivityStatus.UNDER_REVIEW,
-                                    ]
-                                ),
-                                1,
-                            )
-                        )
-                    ).label("pending"),
-                    func.count(case((Activity.status == ActivityStatus.VERIFIED, 1))).label(
-                        "verified"
-                    ),
-                    func.count(
-                        case((Activity.status == ActivityStatus.CORRECTION_REQUIRED, 1))
-                    ).label("correction"),
-                    func.count(case((Activity.status == ActivityStatus.REJECTED, 1))).label(
-                        "rejected"
-                    ),
-                    func.coalesce(
-                        func.sum(
-                            case(
-                                (Activity.status == ActivityStatus.VERIFIED, Activity.learners_reached),
-                                else_=0,
-                            )
-                        ),
-                        0,
-                    ).label("learners"),
-                    func.coalesce(
-                        func.sum(
-                            case(
-                                (Activity.status == ActivityStatus.VERIFIED, Activity.leads_generated),
-                                else_=0,
-                            )
-                        ),
-                        0,
-                    ).label("leads"),
-                    func.coalesce(
-                        func.sum(
-                            case(
-                                (
-                                    Activity.status == ActivityStatus.VERIFIED,
-                                    Activity.admissions_generated,
-                                ),
-                                else_=0,
-                            )
-                        ),
-                        0,
-                    ).label("admissions"),
+                    SBU.code.label("sbu_code"),
+                    *activity_metric_columns(),
                 )
-                .outerjoin(Activity, ALC.id == Activity.alc_id)
-                .where(alc_scope(user))
-                .group_by(ALC.id)
+                .outerjoin(SBU, ALC.sbu_id == SBU.id)
+                .outerjoin(Activity, alc_activity_join(*activity_filters))
+                .where(*alc_filters)
+                .group_by(ALC.id, SBU.id)
                 .order_by(ALC.alc_code)
             )
         )
         .mappings()
         .all()
     )
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(
+    return csv_response(
         [
-            "ALC Code",
-            "ALC Name",
-            "Submitted",
-            "Pending",
-            "Verified",
-            "Correction Required",
-            "Rejected",
-            "Verified Learners",
-            "Verified Leads",
+            "ALC Code", "ALC Name", "SBU", "Submitted", "Pending", "Verified",
+            "Correction Required", "Rejected", "Verified Learners", "Verified Leads",
             "Verified Admissions",
-        ]
-    )
-    for row in rows:
-        writer.writerow(
+        ],
+        (
             [
-                safe_csv(value)
-                for value in [
-                    row["alc_code"],
-                    row["alc_name"],
-                    row["submitted"],
-                    row["pending"],
-                    row["verified"],
-                    row["correction"],
-                    row["rejected"],
-                    row["learners"],
-                    row["leads"],
-                    row["admissions"],
-                ]
+                r["alc_code"], r["alc_name"], r["sbu_code"] or "", r["activities"], r["pending"],
+                r["verified"], r["corrections"], r["rejected"], r["learners"], r["leads"],
+                r["admissions"],
             ]
-        )
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=portal-verification-status.csv"},
+            for r in rows
+        ),
+        "portal-verification-status.csv",
     )

@@ -204,9 +204,21 @@ async def test_sbu_evidence_scope(client, session):
     ev_b = await session.scalar(
         select(ActivityEvidence).where(ActivityEvidence.activity_id == uuid.UUID(b["id"]))
     )
+    assert (await client.post(f"/api/portal/activities/{b['id']}/submit")).status_code == 200
     client.cookies.clear()
     client.headers.pop("X-CSRF-Token", None)
     await login(client, "sbu-4", "StrongSbuPass4!", "SBU")
+    # A DRAFT (and its evidence) is private to its ALC, even inside the SBU's scope.
+    assert (await client.get(f"/api/portal/evidence/{ev_a.id}/access")).status_code == 404
+    assert (await client.get(f"/api/portal/evidence/{ev_b.id}/access")).status_code == 404
+    client.cookies.clear()
+    client.headers.pop("X-CSRF-Token", None)
+    await login(client, "00010001", "StrongAlcPassA!", "ALC")
+    assert (await client.post(f"/api/portal/activities/{a['id']}/submit")).status_code == 200
+    client.cookies.clear()
+    client.headers.pop("X-CSRF-Token", None)
+    await login(client, "sbu-4", "StrongSbuPass4!", "SBU")
+    # Once submitted, the SBU sees its own ALC's evidence; another SBU's stays hidden.
     assert (await client.get(f"/api/portal/evidence/{ev_a.id}/access")).status_code == 200
     assert (await client.get(f"/api/portal/evidence/{ev_b.id}/access")).status_code == 404
 

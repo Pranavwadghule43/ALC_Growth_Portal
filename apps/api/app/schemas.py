@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
-from app.enums import ActivityStatus, AlcStatus, Role, TaskStatus
+from app.enums import ActivityStatus, AlcStatus, ReviewAction, Role, TaskStatus
 
 
 class ORMModel(BaseModel):
@@ -115,6 +115,8 @@ class ReviewOut(ORMModel):
     action: str
     remark: str | None
     reviewed_at: datetime
+    reviewer_role: str | None = None
+    is_decision_change: bool = False
 
 
 class RevisionOut(ORMModel):
@@ -147,6 +149,13 @@ class ActivityOut(ActivityIn, ORMModel):
 
 class ReviewDecisionIn(BaseModel):
     remark: str | None = Field(default=None, max_length=4000)
+
+
+class DecisionChangeIn(BaseModel):
+    """Override a final decision. The reason is mandatory for every target decision."""
+
+    decision: ReviewAction
+    remark: str = Field(min_length=1, max_length=4000)
 
 
 class TaskIn(BaseModel):

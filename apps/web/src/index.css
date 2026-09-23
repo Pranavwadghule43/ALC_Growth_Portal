@@ -19,5 +19,8 @@
   th { @apply border-b bg-slate-50 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500; }
   td { @apply border-b px-4 py-3 align-top; }
   tr:last-child td { @apply border-b-0; }
+  /* Dense variant for wide desktop tables with many numeric columns. */
+  .table-dense th { @apply px-3 tracking-normal; }
+  .table-dense td { @apply px-3; }
 }
 

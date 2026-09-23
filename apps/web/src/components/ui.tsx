@@ -36,3 +36,18 @@ export function RowActions({ base, id, status }: { base: string; id: string; sta
     {reviewable && <Link to={`${base}/${id}`} title="Review activity" aria-label="Review activity" className="inline-flex items-center gap-1 rounded-md bg-teal px-2 py-1 text-xs font-semibold text-white hover:bg-teal/90"><ClipboardCheck className="h-3.5 w-3.5" />Review</Link>}
   </div>
 }
+// Server-side pagination footer shared by directory and queue tables.
+export function Pager({ page, pages, total, noun = 'records', onPage }: { page: number; pages: number; total: number; noun?: string; onPage: (page: number) => void }) {
+  return <div className="mt-4 flex items-center justify-between text-sm"><span className="text-slate-600">Page {page} of {Math.max(pages, 1)} · {formatNumber(total)} {noun}</span><div className="flex gap-2"><button className="btn-secondary" disabled={page <= 1} onClick={() => onPage(page - 1)}>Previous</button><button className="btn-secondary" disabled={page >= pages} onClick={() => onPage(page + 1)}>Next</button></div></div>
+}
+// Modal confirmation used before any recorded decision.
+export function ConfirmDialog({ title, body, confirmLabel, tone = 'primary', busy, onConfirm, onCancel }: { title: string; body: ReactNode; confirmLabel: string; tone?: 'primary' | 'danger' | 'warning'; busy?: boolean; onConfirm: () => void; onCancel: () => void }) {
+  useEffect(() => { const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) onCancel() }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey) }, [busy, onCancel])
+  const button = tone === 'danger' ? 'btn-danger' : tone === 'warning' ? 'btn bg-amber-600 text-white hover:bg-amber-700' : 'btn-primary'
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl"><h2 id="confirm-title" className="text-lg font-bold text-navy">{title}</h2><div className="mt-3 text-sm text-slate-700">{body}</div>
+      <div className="mt-6 flex justify-end gap-2"><button type="button" className="btn-secondary" disabled={busy} onClick={onCancel}>Cancel</button><button type="button" className={button} disabled={busy} onClick={onConfirm}>{busy ? 'Saving…' : confirmLabel}</button></div></div>
+  </div>
+}
+// Labelled filter control wrapper for desktop filter bars.
+export function Filter({ label, children }: { label: string; children: ReactNode }) { return <div><label className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</label><div className="mt-1">{children}</div></div> }

@@ -15,6 +15,13 @@ REVIEWABLE_STATUSES = {
     ActivityStatus.RESUBMITTED,
     ActivityStatus.UNDER_REVIEW,
 }
+# Final decisions that an authorised reviewer (DCU or Admin) may later change.
+FINAL_STATUSES = {ActivityStatus.VERIFIED, ActivityStatus.REJECTED}
+ACTION_RESULT = {
+    ReviewAction.VERIFY: ActivityStatus.VERIFIED,
+    ReviewAction.REQUEST_CORRECTION: ActivityStatus.CORRECTION_REQUIRED,
+    ReviewAction.REJECT: ActivityStatus.REJECTED,
+}
 
 
 def activity_snapshot(activity: Activity) -> dict:
@@ -62,7 +69,8 @@ async def admin_activity(db: AsyncSession, activity_id: uuid.UUID, lock: bool = 
             selectinload(Activity.reviews),
             selectinload(Activity.revisions),
         )
-        .where(Activity.id == activity_id)
+        # Admin works on submitted-workflow data; a DRAFT is private to its ALC.
+        .where(Activity.id == activity_id, Activity.status != ActivityStatus.DRAFT)
     )
     if lock:
         query = query.with_for_update(of=Activity)
@@ -109,31 +117,61 @@ async def submit_activity(db: AsyncSession, activity: Activity, user: User) -> A
 
 
 async def review_activity(
-    db: AsyncSession, activity: Activity, reviewer: User, action: ReviewAction, remark: str | None
+    db: AsyncSession,
+    activity: Activity,
+    reviewer: User,
+    action: ReviewAction,
+    remark: str | None,
+    change_decision: bool = False,
 ) -> Activity:
-    if activity.status not in REVIEWABLE_STATUSES:
-        raise HTTPException(status_code=409, detail="Activity is not awaiting review")
-    if action in {ReviewAction.REQUEST_CORRECTION, ReviewAction.REJECT} and not (
-        remark and remark.strip()
-    ):
-        raise HTTPException(status_code=422, detail="A review reason is required")
+    """Apply a review decision and append it to the activity's review history.
+
+    Normal review acts on an activity awaiting review; a reason is required to request a
+    correction or reject. ``change_decision`` instead overrides an earlier *final* decision
+    (VERIFIED or REJECTED) — callers must restrict it to roles allowed to do so — and always
+    requires a reason, even when the new decision is Verify. Either way a new
+    ``ActivityReview`` row is appended: earlier reviews are never edited or deleted, and
+    dashboards/reports follow the activity's new current status.
+    """
+    has_remark = bool(remark and remark.strip())
+    if change_decision:
+        if activity.status not in FINAL_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail="Only a verified or rejected activity's decision can be changed",
+            )
+        if not has_remark:
+            raise HTTPException(
+                status_code=422, detail="A reason is required to change a decision"
+            )
+        if ACTION_RESULT[action] == activity.status:
+            raise HTTPException(
+                status_code=409, detail=f"Activity is already {activity.status.value}"
+            )
+    else:
+        if activity.status not in REVIEWABLE_STATUSES:
+            raise HTTPException(status_code=409, detail="Activity is not awaiting review")
+        if action in {ReviewAction.REQUEST_CORRECTION, ReviewAction.REJECT} and not has_remark:
+            raise HTTPException(status_code=422, detail="A review reason is required")
     previous = activity.status
+    activity.status = ACTION_RESULT[action]
     if action == ReviewAction.VERIFY:
-        activity.status = ActivityStatus.VERIFIED
         activity.verified_at = datetime.now(timezone.utc)
         activity.verified_by = reviewer.id
-    elif action == ReviewAction.REQUEST_CORRECTION:
-        activity.status = ActivityStatus.CORRECTION_REQUIRED
     else:
-        activity.status = ActivityStatus.REJECTED
+        # The activity is no longer verified; who verified it earlier stays in the history.
+        activity.verified_at = None
+        activity.verified_by = None
     db.add(
         ActivityReview(
             activity_id=activity.id,
             reviewer_id=reviewer.id,
+            reviewer_role=reviewer.role.value,
             previous_status=previous,
             new_status=activity.status,
             action=action,
             remark=remark.strip() if remark else None,
+            is_decision_change=change_decision,
         )
     )
     alc_users = (
@@ -146,6 +184,8 @@ async def review_activity(
         ReviewAction.REQUEST_CORRECTION: "Correction requested",
         ReviewAction.REJECT: "Activity rejected",
     }[action]
+    if change_decision:
+        title = f"Review decision changed: {title.lower()}"
     for recipient in alc_users:
         db.add(
             Notification(

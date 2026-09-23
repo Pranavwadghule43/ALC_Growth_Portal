@@ -1,22 +1,35 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate, useParams } from 'react-router-dom'
-import { FileText, Image } from 'lucide-react'
+import { Link, useParams } from 'react-router-dom'
+import { ChevronLeft } from 'lucide-react'
 import { api } from '../lib/api'
-import type { Activity, Alc, Evidence, Sbu } from '../types'
-import { Badge, ErrorState, formatDate, formatNumber, Loading, PageHeader } from '../components/ui'
+import type { Activity, Alc, Sbu, UnitRef } from '../types'
+import { Badge, ErrorState, Loading, PageHeader, REVIEWABLE_STATUSES, Toast } from '../components/ui'
+import { ActivityDetails, DecisionPanel, EvidenceGallery, ReviewHistory } from '../components/review'
 
-export default function ReviewActivity(){
-  const {id}=useParams();const navigate=useNavigate();const client=useQueryClient();const [remark,setRemark]=useState('');const [error,setError]=useState('');const [busy,setBusy]=useState(false)
-  const query=useQuery({queryKey:['admin-activity',id],queryFn:()=>api.get<{activity:Activity;alc:Alc;sbu?:Sbu|null}>(`/admin/activities/${id}`)})
-  async function openEvidence(e:Evidence){const {url}=await api.get<{url:string}>(`/admin/evidence/${e.id}/access`);window.open(url,'_blank','noopener,noreferrer')}
-  async function decide(action:'verify'|'request-correction'|'reject'){if((action!=='verify'&&!remark.trim())){setError('A reason is required for correction or rejection.');return}if(!confirm(`Confirm ${action.replace('-',' ')}? This decision will be recorded in the audit history.`))return;setBusy(true);setError('');try{await api.post(`/admin/activities/${id}/${action}`,{remark:remark||null});await client.invalidateQueries({queryKey:['admin-activities']});navigate('/admin/verification')}catch(e){setError(e instanceof Error?e.message:'Review failed')}finally{setBusy(false)}}
-  if(query.isLoading)return <Loading/>;if(query.error||!query.data)return <ErrorState error={query.error}/>
-  const {activity:a,alc,sbu}=query.data;const reviewable=['SUBMITTED','RESUBMITTED','UNDER_REVIEW'].includes(a.status);const revisions=a.revisions??[]
-  return <><PageHeader title={a.activity_number} description={`${alc.alc_code} · ${alc.alc_name}`} actions={<Badge status={a.status}/>}/><div className="grid gap-6 xl:grid-cols-[1.25fr_.75fr]"><div className="space-y-6"><section className="panel p-5"><h2 className="mb-4 font-bold text-navy">Activity details</h2><dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{[['Type',a.activity_type],['Partner',a.partner?.partner_name??'—'],['Ecosystem',a.ecosystem],['Collaboration',a.collaboration_type??'—'],['Activity date',formatDate(a.activity_date)],['Location',a.location],['Submitted',formatDate(a.submitted_at)]].map(([k,v])=><div key={k}><dt className="text-xs font-semibold uppercase text-slate-500">{k}</dt><dd className="mt-1 text-sm font-medium">{v}</dd></div>)}</dl><div className="mt-5 grid gap-4 sm:grid-cols-3"><div className="rounded-md bg-slate-50 p-4"><p className="text-xs text-slate-500">Learners reached</p><b className="text-xl">{formatNumber(a.learners_reached)}</b></div><div className="rounded-md bg-slate-50 p-4"><p className="text-xs text-slate-500">Leads generated</p><b className="text-xl">{formatNumber(a.leads_generated)}</b></div><div className="rounded-md bg-slate-50 p-4"><p className="text-xs text-slate-500">Admissions</p><b className="text-xl">{formatNumber(a.admissions_generated)}</b></div></div><div className="mt-5"><h3 className="text-sm font-semibold">Description</h3><p className="mt-1 whitespace-pre-wrap text-sm text-slate-600">{a.description}</p><h3 className="mt-4 text-sm font-semibold">Outcome</h3><p className="mt-1 whitespace-pre-wrap text-sm text-slate-600">{a.outcome}</p></div></section>
-        <section className="panel p-5"><h2 className="font-bold text-navy">Evidence ({a.evidence.length})</h2><div className="mt-4 grid gap-3 sm:grid-cols-2">{a.evidence.map(e=><button key={e.id} onClick={()=>openEvidence(e)} className="flex items-center gap-3 rounded-md border p-4 text-left hover:border-teal hover:bg-teal/5">{e.mime_type==='application/pdf'?<FileText className="text-red-700"/>:<Image className="text-teal"/>}<span className="min-w-0"><b className="block truncate text-sm">{e.original_filename}</b><small className="text-slate-500">{(e.file_size/1024/1024).toFixed(1)} MB</small></span></button>)}</div></section>
-        {!!a.reviews.length&&<section className="panel p-5"><h2 className="mb-4 font-bold text-navy">Review and resubmission history</h2><div className="space-y-4">{a.reviews.map(r=><div key={r.id} className="border-l-2 border-teal pl-4"><b className="text-sm">{r.action.replaceAll('_',' ')}</b><span className="ml-2 text-xs text-slate-500">{formatDate(r.reviewed_at)}</span>{r.remark&&<p className="mt-1 text-sm text-slate-600">{r.remark}</p>}</div>)}</div></section>}
-        {!!revisions.length&&<section className="panel p-5"><h2 className="mb-4 font-bold text-navy">Submission / revision history</h2><div className="space-y-4">{revisions.map(r=><div key={r.id} className="border-l-2 border-slate-300 pl-4"><b className="text-sm">Revision {r.revision_number}</b><span className="ml-2 text-xs text-slate-500">{formatDate(r.created_at)}</span><p className="mt-1 text-sm text-slate-600">{r.change_summary}</p></div>)}</div></section>}</div>
-      <aside className="space-y-5"><section className="panel p-5"><h2 className="font-bold text-navy">ALC</h2><p className="mt-3 text-sm font-semibold">{alc.alc_name}</p><p className="text-sm text-slate-500">{alc.alc_code}</p><p className="mt-2 text-xs text-slate-500">Assigned SBU: <span className="font-medium text-navy">{sbu ? `${sbu.code} · ${sbu.name}` : 'Unassigned'}</span></p></section>{reviewable&&<section className="panel p-5"><h2 className="font-bold text-navy">Review decision</h2><label className="mt-4 block">Remark / reason</label><textarea className="mt-1.5 min-h-28" value={remark} onChange={e=>setRemark(e.target.value)} placeholder="Required for correction and rejection"/>{error&&<p className="mt-3 text-sm text-red-700">{error}</p>}<div className="mt-4 space-y-2"><button disabled={busy} className="btn-primary w-full" onClick={()=>decide('verify')}>Verify Activity</button><button disabled={busy} className="btn-secondary w-full border-amber-400 text-amber-900" onClick={()=>decide('request-correction')}>Request Correction</button><button disabled={busy} className="btn-danger w-full" onClick={()=>decide('reject')}>Reject Activity</button></div></section>}</aside></div></>
+// Admin activity review. Admin may review pending activities and, like a DCU, change a
+// final (verified / rejected) decision with a mandatory reason; history is append-only.
+export default function ReviewActivity() {
+  const { id } = useParams(); const client = useQueryClient(); const [toast, setToast] = useState('')
+  const query = useQuery({ queryKey: ['admin-activity', id], queryFn: () => api.get<{ activity: Activity; alc: Alc; sbu?: Sbu | null; dcu?: UnitRef | null; can_change_decision: boolean }>(`/admin/activities/${id}`) })
+  async function done(message: string) { setToast(message); await client.invalidateQueries() }
+  if (query.isLoading) return <Loading />
+  if (query.error || !query.data) return <ErrorState error={query.error} />
+  const { activity: a, alc, sbu, dcu } = query.data
+  return <>
+    <Link to="/admin/verification" className="mb-3 inline-flex items-center gap-1 text-sm font-semibold text-slate-500 hover:text-teal"><ChevronLeft className="h-4 w-4" />Verification queue</Link>
+    <PageHeader title={a.activity_number} description={`${alc.alc_code} · ${alc.alc_name}`} actions={<Badge status={a.status} />} />
+    <div className="grid gap-6 xl:grid-cols-[1.3fr_.7fr]">
+      <div className="space-y-6">
+        <ActivityDetails activity={a} />
+        <EvidenceGallery evidence={a.evidence} accessPath={e => `/admin/evidence/${e}/access`} />
+        <ReviewHistory reviews={a.reviews} revisions={a.revisions ?? []} />
+      </div>
+      <aside className="space-y-5 xl:sticky xl:top-6 xl:self-start">
+        <section className="panel p-5"><h2 className="font-bold text-navy">ALC</h2><p className="mt-3 text-sm font-semibold">{alc.alc_name}</p><p className="text-sm text-slate-500">{alc.alc_code}</p><p className="mt-2 text-xs text-slate-500">SBU: <span className="font-medium text-navy">{sbu ? `${sbu.code} · ${sbu.name}` : 'Unassigned'}</span></p><p className="mt-1 text-xs text-slate-500">DCU: <span className="font-medium text-navy">{dcu?.name ?? 'Unassigned'}</span></p></section>
+        <DecisionPanel basePath={`/admin/activities/${a.id}`} status={a.status} canReview={REVIEWABLE_STATUSES.includes(a.status)} canChangeDecision={query.data.can_change_decision} onDone={done} />
+      </aside>
+    </div>
+    {toast && <Toast message={toast} onClose={() => setToast('')} />}
+  </>
 }
-

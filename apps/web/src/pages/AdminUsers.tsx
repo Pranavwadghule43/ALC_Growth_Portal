@@ -25,7 +25,10 @@ export default function AdminUsers() {
   async function save(event: React.FormEvent) {
     event.preventDefault(); setError('')
     try {
-      await api.post('/admin/users', { ...form, email: form.email || null, alc_id: form.role === 'ALC' ? form.alc_id : null, sbu_id: form.role === 'SBU' ? form.sbu_id : null, dcu_id: form.role === 'DCU' ? form.dcu_id : null })
+      // Send exactly the one assignment key the role requires (ALC → alc_id, SBU → sbu_id,
+      // DCU → dcu_id; ADMIN → none). The backend re-validates every combination.
+      const assignment = form.role === 'ALC' ? { alc_id: form.alc_id } : form.role === 'SBU' ? { sbu_id: form.sbu_id } : form.role === 'DCU' ? { dcu_id: form.dcu_id } : {}
+      await api.post('/admin/users', { username: form.username, email: form.email || null, role: form.role, password: form.password, must_change_password: form.must_change_password, ...assignment })
       setOpen(false); setForm(empty); client.invalidateQueries({ queryKey: ['users'] })
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Unable to create user') }
   }
@@ -57,7 +60,7 @@ export default function AdminUsers() {
       <div><label>Role</label><select className="mt-1" value={form.role} onChange={e => setForm({ ...form, role: e.target.value })}><option>ALC</option><option>SBU</option><option>DCU</option><option>ADMIN</option></select></div>
       {form.role === 'ALC' && <div><label>ALC</label><input className="mb-2 mt-1" placeholder="Search code or centre name" value={alcSearch} onChange={e => setAlcSearch(e.target.value)} /><select required value={form.alc_id} onChange={e => setForm({ ...form, alc_id: e.target.value })}><option value="">Select ALC</option>{alcs.data?.items.map(a => <option key={a.id} value={a.id}>{a.alc_code} · {a.alc_name}</option>)}</select></div>}
       {form.role === 'SBU' && <div><label>SBU</label><select className="mt-1" required value={form.sbu_id} onChange={e => setForm({ ...form, sbu_id: e.target.value })}><option value="">Select SBU</option>{sbus.data?.items.map(s => <option key={s.id} value={s.id}>{s.code} · {s.name}</option>)}</select></div>}
-      {form.role === 'DCU' && <div><label>DCU</label><select className="mt-1" required value={form.dcu_id} onChange={e => setForm({ ...form, dcu_id: e.target.value })}><option value="">Select DCU</option>{dcus.data?.items.map(d => <option key={d.id} value={d.id}>{d.code} · {d.name}</option>)}</select></div>}
+      {form.role === 'DCU' && <div><label htmlFor="user-dcu">DCU</label><select id="user-dcu" className="mt-1" required value={form.dcu_id} onChange={e => setForm({ ...form, dcu_id: e.target.value })}><option value="">{dcus.isLoading ? 'Loading DCUs…' : 'Select DCU'}</option>{dcus.data?.items.map(d => <option key={d.id} value={d.id}>{d.name.replace(/^DCU /, '')} ({d.code})</option>)}</select>{dcus.error && <p className="mt-1 text-xs text-red-700">Unable to load DCUs: {dcus.error instanceof Error ? dcus.error.message : 'request failed'}</p>}{dcus.data && !dcus.data.items.length && <p className="mt-1 text-xs text-slate-500">No DCUs exist yet. Run the hierarchy migration / seed.</p>}</div>}
       <div><label>Temporary password</label><input className="mt-1" type="password" minLength={12} required value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} /></div>
       {error && <p className="text-sm text-red-700 md:col-span-2">{error}</p>}
       <div className="md:col-span-2"><button className="btn-primary">Create user</button></div>

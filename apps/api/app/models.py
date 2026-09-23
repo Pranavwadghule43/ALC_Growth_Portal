@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -223,6 +224,13 @@ class ActivityReview(Base):
     action: Mapped[ReviewAction] = mapped_column(Enum(ReviewAction, native_enum=False))
     remark: Mapped[str | None] = mapped_column(Text)
     reviewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Role of the reviewer at decision time (kept even if the login is later deleted) and
+    # whether this entry overrode an earlier final decision (VERIFIED / REJECTED). Reviews
+    # are append-only: a changed decision adds a row and never edits or deletes earlier ones.
+    reviewer_role: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    is_decision_change: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
     activity: Mapped[Activity] = relationship(back_populates="reviews")
 
 

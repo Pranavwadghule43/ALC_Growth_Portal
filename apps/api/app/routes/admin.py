@@ -40,6 +40,7 @@ from app.schemas import (
     ActivityOut,
     AlcStatusPatch,
     DcuOut,
+    DecisionChangeIn,
     ReviewDecisionIn,
     SbuIn,
     SbuOut,
@@ -49,9 +50,11 @@ from app.schemas import (
     UserPatch,
 )
 from app.services import alc_import
-from app.services.activities import admin_activity, review_activity
+from app.services.activities import FINAL_STATUSES, admin_activity, review_activity
 from app.services.audit import record_audit
 from app.services.csv_export import safe_csv
+from app.services.rollups import alc_activity_join
+from app.services.scope import submitted_workflow
 from app.storage import storage_service
 
 router = APIRouter(prefix="/admin", tags=["Admin"], dependencies=[Depends(require_csrf)])
@@ -147,11 +150,16 @@ async def dashboard(_: User = Depends(require_admin), db: AsyncSession = Depends
         await db.scalar(select(func.count(Partner.id)).where(Partner.status == "ACTIVE")) or 0
     )
     status_rows = (
-        await db.execute(select(Activity.status, func.count(Activity.id)).group_by(Activity.status))
+        await db.execute(
+            select(Activity.status, func.count(Activity.id))
+            .where(submitted_workflow())
+            .group_by(Activity.status)
+        )
     ).all()
     trend_rows = (
         await db.execute(
             select(Activity.activity_date, func.count(Activity.id))
+            .where(submitted_workflow())
             .group_by(Activity.activity_date)
             .order_by(Activity.activity_date.desc())
             .limit(30)
@@ -177,7 +185,7 @@ async def dashboard(_: User = Depends(require_admin), db: AsyncSession = Depends
 
 
 def queue_filters(status, activity_type, ecosystem, alc_id, date_from, date_to, search):
-    filters = []
+    filters = [submitted_workflow()]
     if status:
         filters.append(Activity.status == status)
     if activity_type:
@@ -307,6 +315,7 @@ async def get_activity(
             if alc.sbu and alc.sbu.dcu
             else None
         ),
+        "can_change_decision": activity.status in FINAL_STATUSES,
     }
 
 
@@ -368,6 +377,40 @@ async def reject(
     return await make_decision(activity_id, payload, ReviewAction.REJECT, request, admin, db)
 
 
+@router.post("/activities/{activity_id}/change-decision", response_model=ActivityOut)
+async def change_decision(
+    activity_id: uuid.UUID,
+    payload: DecisionChangeIn,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin override of a final decision (VERIFIED / REJECTED). Reason required for every
+    target decision; appends a decision-change review, never rewrites history."""
+    activity = await admin_activity(db, activity_id, lock=True)
+    previous = activity.status
+    await review_activity(
+        db, activity, admin, payload.decision, payload.remark, change_decision=True
+    )
+    await record_audit(
+        db,
+        "decision_changed",
+        "activity",
+        activity.id,
+        admin,
+        request,
+        {
+            "previous_status": previous.value,
+            "new_status": activity.status.value,
+            "remark": payload.remark,
+            "alc_id": str(activity.alc_id),
+        },
+    )
+    await db.commit()
+    db.expire(activity, ["reviews", "revisions"])
+    return await admin_activity(db, activity.id)
+
+
 @router.get("/evidence/{evidence_id}/access")
 async def evidence_access(
     evidence_id: uuid.UUID,
@@ -376,8 +419,12 @@ async def evidence_access(
     db: AsyncSession = Depends(get_db),
 ):
     evidence = await db.scalar(
-        select(ActivityEvidence).where(
-            ActivityEvidence.id == evidence_id, ActivityEvidence.is_active.is_(True)
+        select(ActivityEvidence)
+        .join(Activity)
+        .where(
+            ActivityEvidence.id == evidence_id,
+            ActivityEvidence.is_active.is_(True),
+            submitted_workflow(),
         )
     )
     if not evidence:
@@ -395,7 +442,15 @@ async def evidence_content(
 ):
     if settings.storage_backend != "local":
         raise HTTPException(status_code=404, detail="Evidence not found")
-    evidence = await db.scalar(select(ActivityEvidence).where(ActivityEvidence.id == evidence_id, ActivityEvidence.is_active.is_(True)))
+    evidence = await db.scalar(
+        select(ActivityEvidence)
+        .join(Activity)
+        .where(
+            ActivityEvidence.id == evidence_id,
+            ActivityEvidence.is_active.is_(True),
+            submitted_workflow(),
+        )
+    )
     if not evidence:
         raise HTTPException(status_code=404, detail="Evidence not found")
     try:
@@ -460,7 +515,7 @@ async def alcs(
                     ).label("learners"),
                     func.max(Activity.activity_date).label("last_activity"),
                 )
-                .outerjoin(Activity, ALC.id == Activity.alc_id)
+                .outerjoin(Activity, alc_activity_join())
                 .where(*filters)
                 .group_by(ALC.id)
                 .order_by(ALC.alc_code)
@@ -496,7 +551,7 @@ async def alc_detail(
                 selectinload(Activity.reviews),
                 selectinload(Activity.revisions),
             )
-            .where(Activity.alc_id == alc_id)
+            .where(Activity.alc_id == alc_id, submitted_workflow())
             .order_by(desc(Activity.updated_at))
             .limit(100)
         )

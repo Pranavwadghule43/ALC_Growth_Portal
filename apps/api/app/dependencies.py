@@ -99,6 +99,15 @@ async def require_supervisor(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+async def require_dcu(user: User = Depends(get_current_user)) -> User:
+    """A DCU login linked to its DCU (``account_available`` already enforces an active DCU)."""
+    if user.role != Role.DCU or user.dcu_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="DCU access required")
+    if user.must_change_password:
+        raise HTTPException(status_code=403, detail="Password change required")
+    return user
+
+
 async def require_sbu(user: User = Depends(get_current_user)) -> User:
     if user.role != Role.SBU or user.sbu_id is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="SBU access required")

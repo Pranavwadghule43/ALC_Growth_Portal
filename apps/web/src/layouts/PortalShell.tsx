@@ -1,10 +1,16 @@
 import { useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { Activity, BarChart3, BookOpen, Building2, CalendarCheck, ClipboardCheck, FileBarChart, Gauge, LogOut, Menu, PlusCircle, Settings, Users, X } from 'lucide-react'
+import { Activity, BarChart3, BookOpen, Building2, CalendarCheck, ClipboardCheck, FileBarChart, Gauge, LogOut, Menu, Network, PlusCircle, Settings, Users, X } from 'lucide-react'
 import { api } from '../lib/api'
 import type { User } from '../types'
 
+// DCU: operational oversight of its own SBUs and ALCs. No ALC authoring, no user management,
+// no audit logs and no global DCU administration.
+const dcuNav = [
+  ['Dashboard', '/portal', Gauge], ['SBUs', '/portal/sbus', Network], ['ALCs', '/portal/alcs', Building2], ['Activities', '/portal/activities', Activity],
+  ['Verification', '/portal/verification', ClipboardCheck], ['Partners', '/portal/partners', Users], ['Reports', '/portal/reports', FileBarChart], ['Profile', '/portal/profile', Settings]
+] as const
 const sbuNav = [
   ['Dashboard', '/portal', Gauge], ['ALCs', '/portal/alcs', Building2], ['Activities', '/portal/activities', Activity],
   ['Verification', '/portal/verification', ClipboardCheck], ['Partners', '/portal/partners', Users], ['Reports', '/portal/reports', FileBarChart], ['Profile', '/portal/profile', Settings]
@@ -33,7 +39,7 @@ export default function PortalShell({ user }: { user: User }) {
   const [open, setOpen] = useState(false); const navigate = useNavigate(); const client = useQueryClient(); const { pathname } = useLocation()
   const isDcu = user.role === 'DCU'
   const isSupervisor = isDcu || user.role === 'SBU'
-  const nav = isSupervisor ? sbuNav : alcNav
+  const nav = isDcu ? dcuNav : isSupervisor ? sbuNav : alcNav
   const primary = isDcu ? (user.dcu?.name ?? user.username) : isSupervisor ? (user.sbu?.name ?? user.username) : (user.alc?.alc_name ?? user.username)
   const secondary = isDcu ? (user.dcu?.code ?? 'DCU') : isSupervisor ? (user.sbu?.code ?? 'SBU') : (user.alc?.alc_code ?? 'ALC')
   async function logout() { await api.post('/auth/logout'); client.clear(); navigate('/login') }
