@@ -30,7 +30,7 @@ export default function DcuReviewActivity() {
     <div className="grid gap-6 xl:grid-cols-[1.3fr_.7fr]">
       <div className="space-y-6">
         <ActivityDetails activity={a} />
-        <EvidenceGallery evidence={a.evidence} accessPath={e => `/portal/evidence/${e}/access`} />
+        <EvidenceGallery evidence={a.evidence} removed={a.removed_evidence} accessPath={e => `/portal/evidence/${e}/access`} />
         <ReviewHistory reviews={a.reviews} revisions={a.revisions ?? []} />
       </div>
       <aside className="space-y-5 xl:sticky xl:top-6 xl:self-start">

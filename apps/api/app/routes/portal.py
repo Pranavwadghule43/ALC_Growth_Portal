@@ -67,6 +67,7 @@ from app.services.activities import (
 )
 from app.services.audit import record_audit
 from app.services.csv_export import safe_csv
+from app.services.evidence_history import evidence_viewable, is_historical
 from app.services.rollups import (
     PENDING_STATUSES,
     ZERO_ACTIVITY_METRICS,
@@ -587,18 +588,21 @@ async def submit(
 # Evidence (shared read; ALC-only writes)
 # --------------------------------------------------------------------------- #
 async def scoped_evidence(
-    db: AsyncSession, user: User, evidence_id: uuid.UUID
+    db: AsyncSession, user: User, evidence_id: uuid.UUID, include_removed: bool = False
 ) -> ActivityEvidence:
+    """Evidence on an activity in the user's scope.
+
+    ``include_removed`` (read-only access) also allows evidence the ALC removed after it was
+    part of a submission, so reviewers can still open what they saw. Scope is unchanged.
+    """
     evidence = await db.scalar(
         select(ActivityEvidence)
         .join(Activity)
-        .where(
-            ActivityEvidence.id == evidence_id,
-            activity_scope(user),
-            ActivityEvidence.is_active.is_(True),
-        )
+        .where(ActivityEvidence.id == evidence_id, activity_scope(user))
     )
-    if not evidence:
+    if not evidence or not (
+        await evidence_viewable(db, evidence) if include_removed else evidence.is_active
+    ):
         raise HTTPException(status_code=404, detail="Evidence not found")
     return evidence
 
@@ -675,10 +679,10 @@ async def delete_evidence(
     if activity.status not in EDITABLE_STATUSES:
         raise HTTPException(status_code=409, detail="Evidence is locked")
     evidence.is_active = False
-    # Evidence a reviewer has already seen (the activity was submitted at least once) keeps its
-    # stored file, so the review history stays verifiable; it is only hidden from the activity.
-    # Evidence on a never-submitted draft is removed from storage as before.
-    retained = activity.submitted_at is not None
+    # Evidence that was part of a submission (a reviewer has seen it) keeps its stored file and
+    # stays viewable as removed/historical evidence. Evidence no reviewer was ever sent (a
+    # draft, or a file added and removed during the same correction) is deleted from storage.
+    retained = await is_historical(db, evidence)
     if not retained:
         await storage_service.delete(evidence.storage_key)
     await record_audit(
@@ -696,7 +700,7 @@ async def evidence_access(
     user: User = Depends(require_portal_user),
     db: AsyncSession = Depends(get_db),
 ):
-    evidence = await scoped_evidence(db, user, evidence_id)
+    evidence = await scoped_evidence(db, user, evidence_id, include_removed=True)
     if settings.storage_backend == "local":
         return {
             "url": f"{str(request.base_url).rstrip('/')}/api/portal/evidence/{evidence_id}/content",
@@ -718,7 +722,7 @@ async def evidence_content(
         raise HTTPException(status_code=404, detail="Evidence not found")
     # Authorize (DCU/SBU/ALC scoping) before touching the filesystem, then treat a
     # missing local file as a 404 rather than letting FileNotFoundError escape as a 500.
-    evidence = await scoped_evidence(db, user, evidence_id)
+    evidence = await scoped_evidence(db, user, evidence_id, include_removed=True)
     try:
         content = await storage_service.get(evidence.storage_key)
     except FileNotFoundError:

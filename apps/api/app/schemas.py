@@ -5,6 +5,8 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app.enums import ActivityStatus, AlcStatus, ReviewAction, Role, TaskStatus
+from app.models import Activity
+from app.services.evidence_history import removed_evidence
 
 
 class ORMModel(BaseModel):
@@ -108,6 +110,12 @@ class EvidenceOut(ORMModel):
     uploaded_at: datetime
 
 
+class RemovedEvidenceOut(EvidenceOut):
+    """Evidence removed by the ALC after a reviewer saw it; kept for the review record."""
+
+    submitted_in: list[int] = []  # revision numbers whose submission included this file
+    recorded: bool = True  # False: inferred for submissions made before evidence was recorded
+
 class ReviewOut(ORMModel):
     id: uuid.UUID
     previous_status: ActivityStatus
@@ -140,11 +148,31 @@ class ActivityOut(ActivityIn, ORMModel):
     evidence: list[EvidenceOut] = []
     reviews: list[ReviewOut] = []
     revisions: list[RevisionOut] = []
+    removed_evidence: list[RemovedEvidenceOut] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def with_removed_evidence(cls, value):
+        # Built from an ORM Activity: add the historical (removed) evidence alongside it.
+        if isinstance(value, Activity):
+            return _ActivityWithHistory(value, removed_evidence(value))
+        return value
 
     @field_validator("evidence", mode="before")
     @classmethod
     def active_evidence_only(cls, value):
         return [item for item in value if getattr(item, "is_active", True)]
+
+
+class _ActivityWithHistory:
+    """Read-only view of an Activity plus its removed evidence, for ActivityOut."""
+
+    def __init__(self, activity: Activity, removed: list[dict[str, Any]]):
+        self._activity = activity
+        self.removed_evidence = removed
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._activity, name)
 
 
 class ReviewDecisionIn(BaseModel):

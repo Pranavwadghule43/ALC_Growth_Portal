@@ -53,6 +53,7 @@ from app.services import alc_import
 from app.services.activities import FINAL_STATUSES, admin_activity, review_activity
 from app.services.audit import record_audit
 from app.services.csv_export import safe_csv
+from app.services.evidence_history import evidence_viewable
 from app.services.rollups import alc_activity_join
 from app.services.scope import submitted_workflow
 from app.services.sessions import revoke_user_sessions
@@ -424,11 +425,11 @@ async def evidence_access(
         .join(Activity)
         .where(
             ActivityEvidence.id == evidence_id,
-            ActivityEvidence.is_active.is_(True),
             submitted_workflow(),
         )
     )
-    if not evidence:
+    # Current evidence, or evidence removed after a reviewer saw it (review history).
+    if not evidence or not await evidence_viewable(db, evidence):
         raise HTTPException(status_code=404, detail="Evidence not found")
     if settings.storage_backend == "local":
         return {"url": f"{str(request.base_url).rstrip('/')}/api/admin/evidence/{evidence_id}/content", "expires_in": 0}
@@ -448,11 +449,11 @@ async def evidence_content(
         .join(Activity)
         .where(
             ActivityEvidence.id == evidence_id,
-            ActivityEvidence.is_active.is_(True),
             submitted_workflow(),
         )
     )
-    if not evidence:
+    # Current evidence, or evidence removed after a reviewer saw it (review history).
+    if not evidence or not await evidence_viewable(db, evidence):
         raise HTTPException(status_code=404, detail="Evidence not found")
     try:
         content = await storage_service.get(evidence.storage_key)
