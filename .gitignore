@@ -50,3 +50,9 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 .pnpm-store/
+
+# Local Phase 3 master data and database backups
+backups/
+data/Ahilya_Nagar.xlsx
+data/Pune.xlsx
+data/RCU-PUNE-NEW-ALCS.csv
