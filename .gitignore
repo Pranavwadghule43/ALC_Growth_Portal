@@ -56,3 +56,6 @@ backups/
 data/Ahilya_Nagar.xlsx
 data/Pune.xlsx
 data/RCU-PUNE-NEW-ALCS.csv
+
+# Local generated provisioning credentials
+provisioning-output/
