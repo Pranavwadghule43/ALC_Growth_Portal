@@ -55,6 +55,7 @@ from app.services.audit import record_audit
 from app.services.csv_export import safe_csv
 from app.services.rollups import alc_activity_join
 from app.services.scope import submitted_workflow
+from app.services.sessions import revoke_user_sessions
 from app.storage import storage_service
 
 router = APIRouter(prefix="/admin", tags=["Admin"], dependencies=[Depends(require_csrf)])
@@ -855,6 +856,7 @@ async def update_user(
         user.must_change_password = (
             True if payload.must_change_password is None else payload.must_change_password
         )
+        await revoke_user_sessions(db, user.id)
     elif payload.must_change_password is not None:
         user.must_change_password = payload.must_change_password
     changes = payload.model_dump(exclude_none=True, exclude={"password"})

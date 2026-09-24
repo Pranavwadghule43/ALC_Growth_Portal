@@ -84,6 +84,7 @@ from app.services.scope import (
     can_access_sbu,
     sbu_scope,
 )
+from app.services.sessions import revoke_user_sessions
 from app.storage import storage_service
 
 router = APIRouter(prefix="/portal", tags=["Portal"], dependencies=[Depends(require_csrf)])
@@ -1133,6 +1134,7 @@ async def supervisor_reset_alc_password(
         raise HTTPException(status_code=404, detail="ALC user not found")
     target.password_hash = hash_password(payload.password)
     target.must_change_password = True
+    await revoke_user_sessions(db, target.id)
     await record_audit(
         db,
         "alc_password_reset",
