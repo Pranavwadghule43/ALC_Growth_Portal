@@ -675,8 +675,16 @@ async def delete_evidence(
     if activity.status not in EDITABLE_STATUSES:
         raise HTTPException(status_code=409, detail="Evidence is locked")
     evidence.is_active = False
-    await storage_service.delete(evidence.storage_key)
-    await record_audit(db, "evidence_deleted", "evidence", evidence.id, user, request)
+    # Evidence a reviewer has already seen (the activity was submitted at least once) keeps its
+    # stored file, so the review history stays verifiable; it is only hidden from the activity.
+    # Evidence on a never-submitted draft is removed from storage as before.
+    retained = activity.submitted_at is not None
+    if not retained:
+        await storage_service.delete(evidence.storage_key)
+    await record_audit(
+        db, "evidence_deleted", "evidence", evidence.id, user, request,
+        {"activity_id": str(activity.id), "file_retained": retained},
+    )
     await db.commit()
     return {"message": "Evidence removed"}
 

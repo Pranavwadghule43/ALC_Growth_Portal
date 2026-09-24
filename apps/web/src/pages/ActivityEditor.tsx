@@ -94,7 +94,7 @@ export default function ActivityEditor(){
     finally{setBusy(false)}
   }
   async function removeEvidence(e:Evidence){
-    const warning=isCorrection?`Remove ${e.original_filename}? The file is deleted permanently, including from the version your reviewer already reviewed.`:`Remove ${e.original_filename}?`
+    const warning=isCorrection?`Remove ${e.original_filename} from this activity? The copy your reviewer already saw is kept in the review record.`:`Remove ${e.original_filename}?`
     if(!confirm(warning))return
     setFormError('');setMessage('')
     try{await api.delete(`/portal/evidence/${e.id}`);await client.invalidateQueries({queryKey:['activity',id]});setMessage(`${e.original_filename} removed.`)}
