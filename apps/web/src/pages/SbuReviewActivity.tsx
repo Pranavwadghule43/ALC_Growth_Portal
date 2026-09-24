@@ -16,6 +16,8 @@ interface ReviewPayload {
 // activity details, evidence gallery (image preview / PDF), combined history and a sticky
 // decision panel. After a decision the page stays open, shows a toast and refetches everything,
 // so the new status, history entry, queue and dashboard counts are current immediately.
+// SBU never gets "Change Decision" on VERIFIED/REJECTED activities (DCU/Admin only), so it is
+// hard-wired off here as well as refused by the backend.
 export default function SbuReviewActivity() {
   const { id } = useParams(); const { pathname } = useLocation(); const client = useQueryClient()
   const [toast, setToast] = useState(''); const closeToast = useCallback(() => setToast(''), [])
