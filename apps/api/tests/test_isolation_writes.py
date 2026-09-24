@@ -15,8 +15,11 @@ from sqlalchemy import select
 
 from app.models import ActivityEvidence, Notification, User
 from tests.conftest import login
+from tests.test_dcu_hierarchy import (
+    NASHIK_ALC_SBU4,
+    hier,  # noqa: F401  (hierarchy fixture)
+)
 from tests.test_dcu_hierarchy import PW as HIER_PW
-from tests.test_dcu_hierarchy import hier  # noqa: F401  (hierarchy fixture)
 
 ALC_A = ("00010001", "StrongAlcPassA!")  # Centre A, SBU 4
 ALC_B = ("00010002", "StrongAlcPassB!")  # Centre B, SBU 6
@@ -146,4 +149,17 @@ async def test_dcu_can_review_but_never_author_alc_content(client, session, hier
         resp = await getattr(client, method)(path, **kwargs)
         assert resp.status_code == 403, (method, path, resp.status_code, resp.text)
     assert (await client.post("/api/portal/activities", json=ACTIVITY)).status_code == 403
+    await assert_centre_b_untouched(client, ids)
+
+
+@pytest.mark.asyncio
+async def test_alc_in_one_dcu_cannot_write_another_dcus_records(client, session, hier):  # noqa: F811
+    # Centre B sits under DCU Pune North; the acting ALC is a DCU Nashik centre (SBU 4).
+    ids = await centre_b_records(client, session)
+    await as_login(client, NASHIK_ALC_SBU4, HIER_PW)
+    for method, path, kwargs in write_calls(ids):
+        resp = await getattr(client, method)(path, **kwargs)
+        assert resp.status_code == 404, (method, path, resp.status_code, resp.text)
+    resp = await client.post(f"/api/portal/notifications/{ids['notification']}/read")
+    assert resp.status_code == 404
     await assert_centre_b_untouched(client, ids)

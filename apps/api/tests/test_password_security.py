@@ -63,6 +63,11 @@ async def test_sbu_reset_ends_existing_alc_sessions(client, seeded):
     await sbu_resets_alc_a(client, seeded)
 
     restore(client, old_browser)
+    # Immediately: the old access token (a stateless JWT, still unexpired) is refused on every
+    # protected endpoint because the account now requires a password change...
+    blocked = await client.get("/api/portal/dashboard")
+    assert blocked.status_code == 403 and blocked.json()["detail"] == "Password change required"
+    # ...and the old refresh token is revoked, so the session cannot be renewed.
     assert (await client.post("/api/auth/refresh")).status_code == 401
 
 
@@ -135,3 +140,57 @@ async def test_dcu_reset_ends_alc_sessions_and_is_scoped(client, hier):  # noqa:
 
     restore(client, old_browser)
     assert (await client.post("/api/auth/refresh")).status_code == 401
+
+
+# --- Forced password change is enforced by the backend, not only the UI ----- #
+@pytest.mark.asyncio
+async def test_forced_change_blocks_protected_alc_and_sbu_actions(client, seeded):
+    await sbu_resets_alc_a(client, seeded)
+    logout(client)
+    await login(client, "00010001", TEMP, "ALC")
+    activity = {
+        "activity_type": "Partner meeting", "ecosystem": "College",
+        "activity_date": "2026-01-05", "location": "Pune", "learners_reached": 1,
+        "leads_generated": 0, "admissions_generated": 0,
+        "description": "Blocked while a change is required", "outcome": "n/a",
+    }
+    for method, path, kwargs in [
+        ("get", "/api/portal/activities", {}),
+        ("post", "/api/portal/activities", {"json": activity}),
+        ("get", "/api/portal/partners", {}),
+        ("get", "/api/portal/reports/activities.csv", {}),
+    ]:
+        resp = await getattr(client, method)(path, **kwargs)
+        assert resp.status_code == 403, (path, resp.status_code)
+        assert resp.json()["detail"] == "Password change required"
+    # Only identity and the change-password endpoint stay reachable.
+    assert (await client.get("/api/auth/me")).status_code == 200
+
+    logout(client)
+    await login(client, "admin", "StrongAdminPass!", "ADMIN")
+    await client.patch(
+        f"/api/admin/users/{seeded['sbu4_user'].id}", json={"password": "AdminTempPass123!"}
+    )
+    logout(client)
+    await login(client, "sbu-4", "AdminTempPass123!", "SBU")
+    for path in (
+        "/api/portal/verification", "/api/portal/alcs", "/api/portal/reports/activities.csv"
+    ):
+        resp = await client.get(path)
+        assert resp.status_code == 403 and resp.json()["detail"] == "Password change required"
+
+
+@pytest.mark.asyncio
+async def test_forced_change_blocks_dcu_actions(client, hier):  # noqa: F811
+    logout(client)
+    await login(client, "admin", "StrongAdminPass!", "ADMIN")
+    r = await client.patch(
+        f"/api/admin/users/{hier['dcu_nashik'].id}", json={"password": "AdminTempPass123!"}
+    )
+    assert r.status_code == 200
+    logout(client)
+    await login(client, "dcu-nashik", "AdminTempPass123!", "DCU")
+    for path in ("/api/portal/sbus", "/api/portal/alcs", "/api/portal/verification",
+                 "/api/portal/reports/activities.csv"):
+        resp = await client.get(path)
+        assert resp.status_code == 403 and resp.json()["detail"] == "Password change required"
