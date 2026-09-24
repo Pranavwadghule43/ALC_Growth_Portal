@@ -542,7 +542,7 @@ async def test_cli_execute_writes_private_credential_file(world, tmp_path, capsy
     out = tmp_path / "alc-accounts.csv"
     code = await cli.run(cli_args(expect_create=4, out=out), factory_for(session))
     assert code == 0
-    assert stat.S_IMODE(os.stat(out).st_mode) == 0o600
+    # POSIX mode bits are asserted in test_credential_file_is_0600_on_posix.
     assert not Path(f"{out}.partial").exists()
     rows = list(csv.DictReader(out.open(encoding="utf-8")))
     assert list(rows[0]) == list(cli.OUTPUT_COLUMNS)
@@ -553,12 +553,49 @@ async def test_cli_execute_writes_private_credential_file(world, tmp_path, capsy
     for row in rows:
         user = await session.scalar(select(User).where(User.username == row["Username"]))
         assert verify_password(row["Temporary Password"], user.password_hash)
-        assert user.password_hash not in out.read_text()
+        assert user.password_hash not in out.read_text(encoding="utf-8")
     printed = capsys.readouterr().out
     assert "$argon2" not in printed
     assert not any(r["Temporary Password"] in printed for r in rows)
+    # The Windows permission warning appears exactly when POSIX modes are unavailable.
+    assert (cli.WINDOWS_PERMISSION_WARNING in printed) == (os.name != "posix")
 
     # Re-running refuses to overwrite the credential file and creates nothing.
+    assert await cli.run(cli_args(expect_create=0, out=out), factory_for(session)) == 2
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits (chmod 0600) are POSIX-only")
+@pytest.mark.asyncio
+async def test_credential_file_is_0600_on_posix(world, tmp_path):
+    previous = os.umask(0)  # most permissive umask: 0600 must still be enforced
+    try:
+        partial = cli.write_partial(tmp_path / "direct.csv", [])
+        assert stat.S_IMODE(os.stat(partial).st_mode) == 0o600
+        out = tmp_path / "alc-accounts.csv"
+        code = await cli.run(cli_args(expect_create=4, out=out), factory_for(world["session"]))
+    finally:
+        os.umask(previous)
+    assert code == 0
+    assert stat.S_IMODE(os.stat(out).st_mode) == 0o600
+
+
+@pytest.mark.asyncio
+async def test_windows_permission_warning_path(world, tmp_path, monkeypatch, capsys):
+    # Simulate a platform without POSIX mode bits: execution still works, keeps every other
+    # safeguard, and warns that the file must be protected by its folder's permissions.
+    monkeypatch.setattr(cli, "POSIX_PERMISSIONS", False)
+    session = world["session"]
+    dry = await cli.run(cli_args(dry_run=True, execute=False), factory_for(session))
+    assert dry == 1 and cli.WINDOWS_PERMISSION_WARNING not in capsys.readouterr().out
+    out = tmp_path / "alc-accounts.csv"
+    assert await cli.run(cli_args(expect_create=4, out=out), factory_for(session)) == 0
+    printed = capsys.readouterr().out
+    assert cli.WINDOWS_PERMISSION_WARNING in printed
+    assert "(folder NTFS permissions)" in printed and "(mode 0600)" not in printed
+    assert out.exists() and not Path(f"{out}.partial").exists()
+    rows = list(csv.DictReader(out.open(encoding="utf-8")))
+    assert len(rows) == 4 and not any(r["Temporary Password"] in printed for r in rows)
+    # Never overwritten on a second run.
     assert await cli.run(cli_args(expect_create=0, out=out), factory_for(session)) == 2
 
 
