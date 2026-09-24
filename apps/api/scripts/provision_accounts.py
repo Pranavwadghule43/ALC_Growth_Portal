@@ -14,9 +14,12 @@ Execution rules:
   ``--out PATH`` for the credential file;
 * conflicts or broken hierarchy block execution unless ``--allow-partial`` is given (they are
   then skipped and reported); inactive records are always skipped;
-* everything runs in one transaction. The credential file is written (mode 0600, never
-  overwriting) before the commit and only renamed into place after it succeeds; on any
-  failure the transaction is rolled back and the partial file deleted.
+* everything runs in one transaction. The credential file is written (never overwriting)
+  before the commit and only renamed into place after it succeeds; on any failure the
+  transaction is rolled back and the partial file deleted.
+* on POSIX (Linux/macOS) the credential file is created owner-only and explicitly forced to
+  mode 0600. On Windows, chmod cannot express that: the file inherits the NTFS permissions
+  of its folder, so the CLI warns and the operator must choose a private folder.
 
 The credential file holds one-time plaintext temporary passwords for distribution. It is
 refused inside a git working tree unless git ignores that path. Password hashes are never
@@ -34,6 +37,16 @@ from collections import Counter
 from pathlib import Path
 
 from app.services import account_provisioning as ap
+
+# POSIX mode bits (chmod 0600) are only meaningful on POSIX systems. On Windows ``os.chmod``
+# can only toggle the read-only flag; access is governed by the folder's NTFS ACL.
+POSIX_PERMISSIONS = os.name == "posix"
+CREDENTIAL_FILE_MODE = 0o600
+WINDOWS_PERMISSION_WARNING = (
+    "WARNING: on Windows the credential file cannot be restricted to mode 0600 with chmod; "
+    "it inherits the NTFS permissions of its folder. Write it to a private folder only you "
+    "can read, treat it as sensitive, and delete it after distribution."
+)
 
 OUTPUT_COLUMNS = (
     "Login Identifier",
@@ -99,9 +112,13 @@ def _cell(value: str) -> str:
 
 
 def write_partial(out: Path, credentials: list[ap.Credential]) -> Path:
-    """Write credentials to ``<out>.partial`` (0600, exclusive create) and return its path."""
+    """Write credentials to ``<out>.partial`` (exclusive create; owner-only 0600 on POSIX)
+    and return its path."""
     partial = Path(f"{out}.partial")
-    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, CREDENTIAL_FILE_MODE)
+    if POSIX_PERMISSIONS:
+        # Enforce 0600 explicitly, before any secret is written, whatever the umask.
+        os.fchmod(fd, CREDENTIAL_FILE_MODE)
     with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(OUTPUT_COLUMNS)
@@ -172,6 +189,8 @@ async def run(args, session_factory=None) -> int:
         except OutputPathError as exc:
             print(f"Refusing to run: {exc}")
             return 2
+        if not POSIX_PERMISSIONS:
+            print(WINDOWS_PERMISSION_WARNING)
 
     async with session_factory() as db:
         if args.dry_run:
@@ -212,8 +231,9 @@ async def run(args, session_factory=None) -> int:
             f"CREATED {len(credentials)} {report['role']} account(s) "
             f"(must change password at first login). Batch {report['batch']}."
         )
+        protection = "mode 0600" if POSIX_PERMISSIONS else "folder NTFS permissions"
         print(
-            f"Temporary passwords written to {out} (mode 0600). Distribute securely, then "
+            f"Temporary passwords written to {out} ({protection}). Distribute securely, then "
             "delete the file. It is not stored anywhere else."
         )
     return 0
