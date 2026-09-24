@@ -25,6 +25,7 @@ from app.enums import Role
 from app.models import ALC, RefreshToken, User
 from app.schemas import ChangePasswordIn, LoginIn, UserOut
 from app.services.audit import record_audit
+from app.services.sessions import revoke_user_sessions
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -238,11 +239,20 @@ async def change_password(
     payload: ChangePasswordIn,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    refresh_token: str | None = Cookie(default=None),
 ):
     if not verify_password(payload.current_password, user.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if verify_password(payload.new_password, user.password_hash):
+        raise HTTPException(
+            status_code=400, detail="New password must be different from the current password"
+        )
     user.password_hash = hash_password(payload.new_password)
     user.must_change_password = False
+    # Sign out every other browser; keep the session making this request.
+    await revoke_user_sessions(
+        db, user.id, keep_token_hash=token_digest(refresh_token) if refresh_token else None
+    )
     await record_audit(db, "password_changed", "user", user.id, user)
     await db.commit()
     return {"message": "Password changed"}

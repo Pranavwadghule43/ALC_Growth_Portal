@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import { ChevronLeft } from 'lucide-react'
@@ -22,12 +22,17 @@ function ActivityTable({ rows }: { rows: Activity[] }) {
 // may still reset the centre's login password, as SBU supervisors can.
 export default function DcuAlcDetail() {
   const { id } = useParams()
-  const [password, setPassword] = useState(''); const [toast, setToast] = useState(''); const [error, setError] = useState('')
+  const [password, setPassword] = useState(''); const [confirmPassword, setConfirmPassword] = useState(''); const [toast, setToast] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false)
+  const closeToast = useCallback(() => setToast(''), [])
   const q = useQuery({ queryKey: ['dcu-alc', id], queryFn: () => api.get<AlcDetail>(`/portal/alcs/${id}`) })
-  async function resetPassword(e: React.FormEvent) {
+  async function resetPassword(e: React.FormEvent, centre: string) {
     e.preventDefault(); setError('')
-    try { await api.post(`/portal/alcs/${id}/reset-password`, { password }); setPassword(''); setToast('Temporary password set. The ALC must change it at next login.') }
+    if (password !== confirmPassword) { setError('The two passwords do not match.'); return }
+    if (!confirm(`Reset the password for ${centre}?\n\nThe centre will be signed out everywhere and must choose a new password at next login. Share the temporary password with them securely.`)) return
+    setBusy(true)
+    try { await api.post(`/portal/alcs/${id}/reset-password`, { password }); setPassword(''); setConfirmPassword(''); setToast('Temporary password set. The centre has been signed out and must change it at next login.') }
     catch (caught) { setError(caught instanceof Error ? caught.message : 'Password reset failed') }
+    finally { setBusy(false) }
   }
   if (q.isLoading) return <Loading />
   if (q.error || !q.data) return <ErrorState error={q.error} />
@@ -51,7 +56,7 @@ export default function DcuAlcDetail() {
     {activities.length ? <ActivityTable rows={activities} /> : <Empty title="No submitted activities" message="Activities appear here once the ALC submits them. Drafts stay private to the ALC." />}
     <h2 className="mb-3 mt-7 font-bold text-navy">Partners</h2>
     {partners.length ? <div className="table-wrap"><table><thead><tr><th>Partner</th><th>Collaboration type</th><th>Ecosystem</th><th>Contact</th><th className="text-right">Activities</th><th>Last activity</th><th>Status</th></tr></thead><tbody>{partners.map(p => <tr key={p.id}><td className="font-semibold">{p.partner_name}</td><td>{p.partner_type}</td><td>{p.ecosystem}</td><td>{p.contact_person ?? '—'}<p className="text-xs text-slate-500">{p.phone ?? p.email}</p></td><td className="text-right">{p.activity_count}</td><td>{formatDate(p.last_activity ?? undefined)}</td><td><Badge status={p.status} /></td></tr>)}</tbody></table></div> : <Empty title="No partners" message="This centre has not added any partners." />}
-    <section className="panel mt-7 max-w-xl p-5"><h2 className="font-bold text-navy">Reset ALC login password</h2><p className="mt-1 text-sm text-slate-500">Set a temporary password for this centre's login. The current password is never shown.</p><form onSubmit={resetPassword} className="mt-4"><label htmlFor="alc-password">New temporary password</label><input id="alc-password" className="mt-1" type="password" minLength={12} required autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} />{error && <p className="mt-2 text-sm text-red-700">{error}</p>}<button className="btn-primary mt-3">Reset password</button></form></section>
-    {toast && <Toast message={toast} onClose={() => setToast('')} />}
+    <section className="panel mt-7 max-w-xl p-5"><h2 className="font-bold text-navy">Reset ALC login password</h2><p className="mt-1 text-sm text-slate-500">Set a temporary password for this centre's login. The current password is never shown. The centre is signed out and must choose its own password at next login.</p><form onSubmit={e => resetPassword(e, `${alc.alc_code} · ${alc.alc_name}`)} className="mt-4 space-y-3"><div><label htmlFor="alc-password">New temporary password</label><input id="alc-password" className="mt-1" type="password" minLength={12} required autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} /><p className="mt-1 text-xs text-slate-500">At least 12 characters.</p></div><div><label htmlFor="alc-password-confirm">Confirm temporary password</label><input id="alc-password-confirm" className="mt-1" type="password" minLength={12} required autoComplete="new-password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} />{confirmPassword && confirmPassword !== password && <p className="mt-1 text-xs text-red-700">Does not match yet.</p>}</div>{error && <p role="alert" className="text-sm text-red-700">{error}</p>}<button className="btn-primary" disabled={busy}>{busy ? 'Resetting…' : 'Reset password'}</button></form></section>
+    {toast && <Toast message={toast} onClose={closeToast} />}
   </>
 }

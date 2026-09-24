@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { FileText, History, Image as ImageIcon, RotateCcw, X } from 'lucide-react'
 import { api } from '../lib/api'
-import type { Activity, Decision, Evidence, Review, Revision } from '../types'
+import type { Activity, Decision, Evidence, RemovedEvidence, Review, Revision } from '../types'
 import { Badge, ConfirmDialog, formatDate, formatNumber } from './ui'
 
 // Shared building blocks for every activity review page (DCU, SBU, Admin). Authorization
@@ -36,21 +36,34 @@ export function ActivityDetails({ activity: a }: { activity: Activity }) {
   </section>
 }
 
-function EvidenceCard({ evidence, accessPath, onPreview }: { evidence: Evidence; accessPath: (id: string) => string; onPreview: (url: string, name: string) => void }) {
+function EvidenceCard({ evidence, accessPath, onPreview, tag }: { evidence: Evidence; accessPath: (id: string) => string; onPreview: (url: string, name: string) => void; tag?: string }) {
   const isPdf = evidence.mime_type === 'application/pdf'
   const { data, isError } = useQuery({ queryKey: ['evidence-url', accessPath(evidence.id)], queryFn: () => api.get<{ url: string }>(accessPath(evidence.id)) })
   const url = data?.url
   function open() { if (!url) return; if (isPdf) window.open(url, '_blank', 'noopener,noreferrer'); else onPreview(url, evidence.original_filename) }
   return <button onClick={open} disabled={!url} title={isPdf ? 'Open PDF in a new tab' : 'Preview image'} className="group flex flex-col overflow-hidden rounded-md border text-left hover:border-teal disabled:cursor-wait">
     <div className="flex h-32 items-center justify-center bg-slate-50">{isPdf ? <FileText className="h-9 w-9 text-red-700" /> : url ? <img src={url} alt={evidence.original_filename} className="h-full w-full object-cover" /> : <ImageIcon className="h-8 w-8 text-teal" />}</div>
-    <span className="min-w-0 p-3"><b className="block truncate text-sm">{evidence.original_filename}</b><small className="text-slate-500">{isError ? 'Unavailable' : `${isPdf ? 'PDF · opens in new tab' : 'Image · click to preview'} · ${(evidence.file_size / 1024 / 1024).toFixed(1)} MB`}</small></span>
+    <span className="min-w-0 p-3">{tag && <span className="mb-1 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-900">{tag}</span>}<b className="block truncate text-sm">{evidence.original_filename}</b><small className="text-slate-500">{isError ? 'Unavailable' : `${isPdf ? 'PDF · opens in new tab' : 'Image · click to preview'} · ${(evidence.file_size / 1024 / 1024).toFixed(1)} MB`}</small></span>
   </button>
 }
 
-export function EvidenceGallery({ evidence, accessPath }: { evidence: Evidence[]; accessPath: (id: string) => string }) {
+// Which submission(s) a removed file was part of, e.g. "Removed · was in submission 1".
+function removedTag(e: RemovedEvidence) {
+  const list = e.submitted_in.join(', ')
+  return e.recorded ? `Removed · was in submission ${list}` : `Removed · earlier submission`
+}
+
+// Current evidence first, then evidence the ALC removed during a correction after a reviewer
+// had seen it. Removed files are opened through the same authorised access routes.
+export function EvidenceGallery({ evidence, removed = [], accessPath }: { evidence: Evidence[]; removed?: RemovedEvidence[]; accessPath: (id: string) => string }) {
   const [preview, setPreview] = useState<{ url: string; name: string } | null>(null)
-  return <section className="panel p-5"><h2 className="font-bold text-navy">Evidence ({evidence.length})</h2>
-    {evidence.length ? <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{evidence.map(e => <EvidenceCard key={e.id} evidence={e} accessPath={accessPath} onPreview={(url, name) => setPreview({ url, name })} />)}</div> : <p className="mt-3 text-sm text-slate-500">No evidence was attached to this activity.</p>}
+  const onPreview = (url: string, name: string) => setPreview({ url, name })
+  return <section className="panel p-5"><h2 className="font-bold text-navy">Current evidence ({evidence.length})</h2>
+    {evidence.length ? <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{evidence.map(e => <EvidenceCard key={e.id} evidence={e} accessPath={accessPath} onPreview={onPreview} />)}</div> : <p className="mt-3 text-sm text-slate-500">No evidence was attached to this activity.</p>}
+    {removed.length > 0 && <div className="mt-6 border-t pt-5"><h3 className="font-bold text-navy">Historical / removed evidence ({removed.length})</h3>
+      <p className="mt-1 text-sm text-slate-500">Removed by the ALC during a correction. Kept because a reviewer saw it in an earlier submission.</p>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{removed.map(e => <EvidenceCard key={e.id} evidence={e} accessPath={accessPath} onPreview={onPreview} tag={removedTag(e)} />)}</div>
+    </div>}
     {preview && <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/85 p-6" onClick={() => setPreview(null)} role="dialog" aria-label="Evidence preview">
       <div className="mb-3 flex w-full max-w-5xl items-center justify-between text-white"><span className="truncate text-sm">{preview.name}</span><button onClick={() => setPreview(null)} aria-label="Close preview"><X className="h-7 w-7" /></button></div>
       <img src={preview.url} alt={preview.name} className="max-h-[80vh] max-w-5xl rounded object-contain" onClick={e => e.stopPropagation()} />
@@ -62,13 +75,20 @@ const roleLabel = (role?: string | null) => role === 'ADMIN' ? 'Admin' : role ??
 const statusLabel = (status: string) => status.replaceAll('_', ' ').toLowerCase().replace(/^\w/, c => c.toUpperCase())
 const actionVerb: Record<string, string> = { VERIFY: 'verified', REQUEST_CORRECTION: 'requested a correction', REJECT: 'rejected' }
 
+// Evidence recorded with a submission (older submissions did not record it).
+function submittedEvidence(r: Revision) {
+  const files = r.snapshot.evidence
+  if (!Array.isArray(files)) return ''
+  return `Evidence: ${files.map(f => (f as { original_filename?: string }).original_filename ?? 'file').join(', ') || 'none'}`
+}
+
 type HistoryEntry = { key: string; at: string; title: string; detail?: string; remark?: string; tone: 'submit' | 'review' | 'change' }
 
 function historyEntries(reviews: Review[], revisions: Revision[]): HistoryEntry[] {
   const entries: HistoryEntry[] = revisions.map(r => ({
     key: `rev-${r.id}`, at: r.created_at, tone: 'submit',
     title: r.revision_number === 1 ? 'ALC submitted the activity' : `ALC resubmitted (revision ${r.revision_number})`,
-    detail: r.change_summary,
+    detail: [r.change_summary, submittedEvidence(r)].filter(Boolean).join(' · '),
   }))
   reviews.forEach(r => entries.push(r.is_decision_change
     ? { key: `review-${r.id}`, at: r.reviewed_at, tone: 'change', title: `${roleLabel(r.reviewer_role)} changed the decision`, detail: `${statusLabel(r.previous_status)} → ${statusLabel(r.new_status)}`, remark: r.remark }

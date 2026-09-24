@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from app.enums import ActivityStatus, ReviewAction
 from app.models import Activity, ActivityReview, ActivityRevision, Notification, User
+from app.services.evidence_history import snapshot_evidence
 
 EDITABLE_STATUSES = {ActivityStatus.DRAFT, ActivityStatus.CORRECTION_REQUIRED}
 REVIEWABLE_STATUSES = {
@@ -35,8 +36,11 @@ def activity_snapshot(activity: Activity) -> dict:
         "leads_generated": activity.leads_generated,
         "admissions_generated": activity.admissions_generated,
         "description": activity.description,
-        "outcome": activity.outcome,
+                "outcome": activity.outcome,
+        # Evidence the reviewer is sent with this submission (kept for review history).
+        "evidence": snapshot_evidence(activity),
     }
+    
 
 
 async def owned_activity(

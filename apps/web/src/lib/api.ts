@@ -6,19 +6,28 @@ function getCookie(name: string) {
 
 export class ApiError extends Error { constructor(message: string, public status: number) { super(message) } }
 
+const AUTH_PATHS = ['/auth/login', '/auth/admin-login', '/auth/refresh', '/auth/me', '/auth/logout']
+const inAdmin = () => window.location.pathname.startsWith('/admin')
+function goTo(path: string) { if (window.location.pathname !== path) window.location.assign(path) }
+
 async function request<T>(path: string, options: RequestInit = {}, retry = true): Promise<T> {
   const headers = new Headers(options.headers)
   if (!(options.body instanceof FormData) && options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
   const csrf = getCookie('csrf_token')
   if (csrf && options.method && !['GET', 'HEAD'].includes(options.method)) headers.set('X-CSRF-Token', decodeURIComponent(csrf))
   const response = await fetch(`${API_URL}${path}`, { ...options, headers, credentials: 'include' })
-  if (response.status === 401 && retry && path !== '/auth/login' && path !== '/auth/admin-login' && path !== '/auth/refresh') {
+  if (response.status === 401 && retry && !AUTH_PATHS.includes(path)) {
     const refreshed = await fetch(`${API_URL}/auth/refresh`, { method: 'POST', credentials: 'include' })
     if (refreshed.ok) return request<T>(path, options, false)
+    // The session has ended (signed out elsewhere or password reset): send the user to sign in again.
+    goTo(inAdmin() ? '/admin/login' : '/login')
   }
   if (!response.ok) {
     const body = await response.json().catch(() => ({}))
-    throw new ApiError(body.detail ?? body.error?.message ?? 'Request failed', response.status)
+    const detail = body.detail ?? body.error?.message ?? 'Request failed'
+    // The account now requires a password change (e.g. reset by an SBU/admin): open the profile page.
+    if (response.status === 403 && detail === 'Password change required') goTo(inAdmin() ? '/admin/profile' : '/portal/profile')
+    throw new ApiError(detail, response.status)
   }
   if (response.status === 204) return undefined as T
   return response.json()
