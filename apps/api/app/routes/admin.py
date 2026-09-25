@@ -3,8 +3,9 @@ import io
 import math
 import uuid
 from datetime import date, timedelta
+from typing import Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, case, delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,6 +48,7 @@ from app.schemas import (
     SbuPatch,
     UserCreate,
     UserOut,
+    UserPage,
     UserPatch,
 )
 from app.services import alc_import
@@ -780,13 +782,69 @@ async def challenge_progress(
     }
 
 
-@router.get("/users", response_model=list[UserOut])
-async def users(_: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    return (
+def _like_pattern(term: str) -> str:
+    """Case-insensitive partial-match pattern with LIKE wildcards escaped, so ``%``, ``_``
+    and ``\\`` in the search text match literally."""
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def user_search_filter(term: str):
+    """Users whose username or email, or whose linked ALC (code / name), SBU (code / name)
+    or DCU (code / name) matches ``term``. Related tables are matched through ``IN``
+    subqueries rather than joins, so a user is never returned twice and counts stay exact."""
+    pattern = _like_pattern(term)
+
+    def match(column):
+        return column.ilike(pattern, escape="\\")
+
+    return or_(
+        match(User.username),
+        match(User.email),
+        User.alc_id.in_(select(ALC.id).where(or_(match(ALC.alc_code), match(ALC.alc_name)))),
+        User.sbu_id.in_(select(SBU.id).where(or_(match(SBU.code), match(SBU.name)))),
+        User.dcu_id.in_(select(DCU.id).where(or_(match(DCU.code), match(DCU.name)))),
+    )
+
+
+@router.get("/users", response_model=UserPage)
+async def users(
+    page_data: tuple[int, int] = Depends(pagination),
+    q: str | None = Query(default=None, max_length=100),
+    role: Role | None = None,
+    status: Literal["active", "inactive"] | None = None,
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin user directory: server-side search (``q``), role and active-status filters, and
+    pagination. A blank or whitespace-only ``q`` means no search."""
+    page, page_size = page_data
+    filters = []
+    term = (q or "").strip()
+    if term:
+        filters.append(user_search_filter(term))
+    if role is not None:
+        filters.append(User.role == role)
+    if status is not None:
+        filters.append(User.is_active.is_(status == "active"))
+    total = await db.scalar(select(func.count(User.id)).where(*filters)) or 0
+    items = (
         await db.scalars(
-            select(User).options(*USER_RESPONSE_LOADERS).order_by(User.username)
+            select(User)
+            .options(*USER_RESPONSE_LOADERS)
+            .where(*filters)
+            .order_by(User.username, User.id)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
         )
     ).all()
+    return {
+        "items": items,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "pages": math.ceil(total / page_size) if total else 0,
+    }
 
 
 @router.post("/users", response_model=UserOut, status_code=201)

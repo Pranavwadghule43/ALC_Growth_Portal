@@ -209,6 +209,16 @@ class Paginated(BaseModel):
     pages: int
 
 
+class UserPage(BaseModel):
+    """One page of the Admin user list (optionally searched / filtered)."""
+
+    items: list[UserOut]
+    page: int
+    page_size: int
+    total: int
+    pages: int
+
+
 class UserCreate(BaseModel):
     username: str = Field(min_length=2, max_length=120)
     email: EmailStr | None = None

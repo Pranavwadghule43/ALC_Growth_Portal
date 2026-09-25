@@ -104,9 +104,9 @@ async def test_admin_update_alc_user_serializes(client, session, seeded):
 async def test_admin_users_list_serializes_all_roles(client, session):
     await login(client, "admin", "StrongAdminPass!", "ADMIN")
     await fresh(session)
-    resp = await client.get("/api/admin/users")
+    resp = await client.get("/api/admin/users?page_size=100")
     assert resp.status_code == 200
-    users = resp.json()
+    users = resp.json()["items"]
     by_name = {u["username"]: u for u in users}
     # ALC user carries its nested SBU; SBU user carries its SBU; admin carries neither.
     assert by_name["alc-a"]["alc"]["sbu"]["code"] == "SBU 4"
