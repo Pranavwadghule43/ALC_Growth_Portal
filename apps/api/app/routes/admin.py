@@ -11,7 +11,7 @@ from sqlalchemy import and_, case, delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth import hash_password
+from app.auth import hash_password_async
 from app.config import settings
 from app.database import get_db
 from app.dependencies import (
@@ -902,7 +902,7 @@ async def create_user(
         alc_id=payload.alc_id if payload.role == Role.ALC else None,
         sbu_id=payload.sbu_id if payload.role == Role.SBU else None,
         dcu_id=payload.dcu_id if payload.role == Role.DCU else None,
-        password_hash=hash_password(payload.password),
+        password_hash=await hash_password_async(payload.password),
         must_change_password=payload.must_change_password,
     )
     db.add(user)
@@ -926,7 +926,7 @@ async def update_user(
     if payload.is_active is not None:
         user.is_active = payload.is_active
     if payload.password:
-        user.password_hash = hash_password(payload.password)
+        user.password_hash = await hash_password_async(payload.password)
         user.must_change_password = (
             True if payload.must_change_password is None else payload.must_change_password
         )

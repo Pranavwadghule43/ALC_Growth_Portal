@@ -7,11 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import (
     create_access_token,
-    hash_password,
+    hash_password_async,
     new_csrf_token,
     new_refresh_token,
     token_digest,
-    verify_password,
+    verify_password_async,
 )
 from app.config import settings
 from app.database import get_db
@@ -25,7 +25,7 @@ from app.enums import Role
 from app.models import ALC, RefreshToken, User
 from app.schemas import ChangePasswordIn, LoginIn, UserOut
 from app.services.audit import record_audit
-from app.services.sessions import revoke_user_sessions
+from app.services.sessions import claim_refresh_token, revoke_user_sessions
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -126,7 +126,7 @@ async def login(
     if (
         not user
         or not user.is_active
-        or not verify_password(payload.password, user.password_hash)
+        or not await verify_password_async(payload.password, user.password_hash)
     ):
         await record_audit(db, "login_failed", "user", request=request)
         await db.commit()
@@ -163,7 +163,7 @@ async def admin_login(
     if (
         not user
         or not user.is_active
-        or not verify_password(payload.password, user.password_hash)
+        or not await verify_password_async(payload.password, user.password_hash)
     ):
         await record_audit(db, "admin_login_failed", "user", request=request)
         await db.commit()
@@ -180,23 +180,19 @@ async def rotate_refresh(
     if not refresh_token:
         raise HTTPException(status_code=401, detail="Refresh token required")
     now = datetime.now(timezone.utc)
-    stored = await db.scalar(
-        select(RefreshToken).where(
-            RefreshToken.token_hash == token_digest(refresh_token),
-            RefreshToken.revoked_at.is_(None),
-            RefreshToken.expires_at > now,
-        )
-    )
-    if not stored:
+    # Check-and-revoke in one statement: of several requests presenting the same token, only
+    # one can rotate it; the others get the same 401 as an expired or revoked token.
+    user_id = await claim_refresh_token(db, token_digest(refresh_token), now)
+    if user_id is None:
         raise HTTPException(status_code=401, detail="Session expired")
     user = await db.scalar(
         select(User)
         .options(*USER_RESPONSE_LOADERS)
-        .where(User.id == stored.user_id, User.is_active.is_(True))
+        .where(User.id == user_id, User.is_active.is_(True))
     )
     if not user or not account_available(user):
+        await db.rollback()  # as before: an unavailable account's token is left untouched
         raise HTTPException(status_code=401, detail="Session expired")
-    stored.revoked_at = now
     raw, digest = new_refresh_token()
     db.add(
         RefreshToken(
@@ -241,13 +237,13 @@ async def change_password(
     db: AsyncSession = Depends(get_db),
     refresh_token: str | None = Cookie(default=None),
 ):
-    if not verify_password(payload.current_password, user.password_hash):
+    if not await verify_password_async(payload.current_password, user.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
-    if verify_password(payload.new_password, user.password_hash):
+    if await verify_password_async(payload.new_password, user.password_hash):
         raise HTTPException(
             status_code=400, detail="New password must be different from the current password"
         )
-    user.password_hash = hash_password(payload.new_password)
+    user.password_hash = await hash_password_async(payload.new_password)
     user.must_change_password = False
     # Sign out every other browser; keep the session making this request.
     await revoke_user_sessions(
