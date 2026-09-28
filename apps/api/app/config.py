@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +14,9 @@ class Settings(BaseSettings):
     cookie_secure: bool = False
     access_token_minutes: int = 15
     refresh_token_days: int = 14
+    # Maximum Argon2 hash/verify operations running at once (each uses ~64 MiB and 4 lanes).
+    # Extra requests wait their turn instead of piling onto the thread pool.
+    password_hash_concurrency: int = Field(default=2, ge=1, le=32)
     max_upload_files: int = 10
     max_upload_bytes: int = 10 * 1024 * 1024
     storage_backend: str = "s3"

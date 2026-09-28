@@ -1,8 +1,11 @@
+import asyncio
 import hashlib
 import secrets
 import uuid
+import weakref
 from datetime import datetime, timedelta, timezone
 
+import anyio
 import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
@@ -21,6 +24,39 @@ def verify_password(password: str, encoded: str) -> bool:
         return password_hasher.verify(encoded, password)
     except (VerifyMismatchError, ValueError):
         return False
+
+
+# --------------------------------------------------------------------------- #
+# Async password hashing for request handlers
+# --------------------------------------------------------------------------- #
+# Argon2 is deliberately CPU- and memory-heavy. Running it directly inside an async handler
+# blocks the event loop, so request handlers use the async wrappers below: the work runs in a
+# worker thread, and a capacity limiter allows at most ``password_hash_concurrency`` Argon2
+# operations at once (the rest wait). The Argon2 parameters above are unchanged, and the
+# synchronous functions remain for scripts and tests.
+_limiters: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, anyio.CapacityLimiter]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def password_limiter() -> anyio.CapacityLimiter:
+    """The Argon2 limiter for the running event loop (created on first use)."""
+    loop = asyncio.get_running_loop()
+    limiter = _limiters.get(loop)
+    if limiter is None:
+        limiter = anyio.CapacityLimiter(settings.password_hash_concurrency)
+        _limiters[loop] = limiter
+    return limiter
+
+
+async def hash_password_async(password: str) -> str:
+    return await anyio.to_thread.run_sync(hash_password, password, limiter=password_limiter())
+
+
+async def verify_password_async(password: str, encoded: str) -> bool:
+    return await anyio.to_thread.run_sync(
+        verify_password, password, encoded, limiter=password_limiter()
+    )
 
 
 def create_access_token(user_id: uuid.UUID) -> str:

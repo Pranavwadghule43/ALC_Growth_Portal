@@ -23,7 +23,7 @@ from sqlalchemy import and_, case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth import hash_password
+from app.auth import hash_password_async
 from app.config import settings
 from app.database import get_db
 from app.dependencies import (
@@ -1144,7 +1144,7 @@ async def supervisor_reset_alc_password(
     )
     if not target:
         raise HTTPException(status_code=404, detail="ALC user not found")
-    target.password_hash = hash_password(payload.password)
+    target.password_hash = await hash_password_async(payload.password)
     target.must_change_password = True
     await revoke_user_sessions(db, target.id)
     await record_audit(
