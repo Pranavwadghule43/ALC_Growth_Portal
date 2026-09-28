@@ -3,6 +3,7 @@ from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 from app.enums import ActivityStatus, AlcStatus, ReviewAction, Role, TaskStatus
 from app.models import Activity
@@ -236,9 +237,28 @@ class UserPatch(BaseModel):
     must_change_password: bool | None = None
 
 
+def _reject_hierarchy_field(data, field: str, endpoint: str):
+    """Hierarchy pointers are never editable through a generic update: reassignment (and its
+    validation and audit) only happens through the dedicated endpoint."""
+    if isinstance(data, dict) and field in data:
+        # PydanticCustomError (not ValueError) so the 422 body stays JSON-serialisable.
+        raise PydanticCustomError(
+            "hierarchy_reassignment_endpoint_required",
+            "{field} cannot be changed here; use PATCH {endpoint}",
+            {"field": field, "endpoint": endpoint},
+        )
+    return data
+
+
 class AlcStatusPatch(BaseModel):
+    """Generic Admin ALC update. Reassigning the ALC's SBU is not possible here."""
+
     status: AlcStatus | None = None
-    sbu_id: uuid.UUID | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_sbu_reassignment(cls, data):
+        return _reject_hierarchy_field(data, "sbu_id", "/api/admin/alcs/{alc_id}/sbu")
 
 
 class SbuIn(BaseModel):
@@ -249,11 +269,28 @@ class SbuIn(BaseModel):
 
 
 class SbuPatch(BaseModel):
+    """Generic Admin SBU update. Reassigning the SBU's DCU is not possible here."""
+
     name: str | None = Field(default=None, min_length=2, max_length=255)
     is_active: bool | None = None
-    # Reassign the SBU to another DCU. Only applied when the field is present in the request;
-    # an explicit ``null`` detaches the SBU from any DCU.
-    dcu_id: uuid.UUID | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_dcu_reassignment(cls, data):
+        return _reject_hierarchy_field(data, "dcu_id", "/api/admin/sbus/{sbu_id}/dcu")
+
+
+class AlcReassignIn(BaseModel):
+    """Move an ALC to another SBU (Admin only). The target must be an active SBU in an active
+    DCU / RCU. Detaching an ALC from its SBU is not supported."""
+
+    sbu_id: uuid.UUID
+
+
+class SbuReassignIn(BaseModel):
+    """Move an SBU (with all its ALCs) to another active DCU in an active RCU (Admin only)."""
+
+    dcu_id: uuid.UUID
 
 
 class SbuOut(ORMModel):

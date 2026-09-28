@@ -313,11 +313,26 @@ async def test_admin_creates_sbu_and_user(client, seeded):
     assert bad.status_code == 422
 
 
+async def place_seeded_sbus(session):
+    """Put the seeded SBU 4 / SBU 6 under DCU Nashik: reassignment targets must sit in a
+    complete, active hierarchy."""
+    from app.services.hierarchy import ensure_hierarchy
+
+    await ensure_hierarchy(session)
+    await session.commit()
+
+
 @pytest.mark.asyncio
-async def test_admin_assigns_alc_to_sbu(client, seeded):
+async def test_admin_assigns_alc_to_sbu(client, session, seeded):
+    await place_seeded_sbus(session)
     await login(client, "admin", "StrongAdminPass!", "ADMIN")
-    resp = await client.patch(
+    # The generic ALC update can no longer move an ALC in the hierarchy.
+    generic = await client.patch(
         f"/api/admin/alcs/{seeded['alc_b'].id}", json={"sbu_id": str(seeded["sbu4"].id)}
+    )
+    assert generic.status_code == 422
+    resp = await client.patch(
+        f"/api/admin/alcs/{seeded['alc_b'].id}/sbu", json={"sbu_id": str(seeded["sbu4"].id)}
     )
     assert resp.status_code == 200
     client.cookies.clear()
@@ -366,21 +381,24 @@ async def test_sbu_alcs_status_filter_and_partner_count(client, seeded):
 
 
 @pytest.mark.asyncio
-async def test_reassignment_grants_and_revokes_access(client, seeded):
+async def test_reassignment_grants_and_revokes_access(client, session, seeded):
     # Assign Centre B (SBU 6) to SBU 4 -> visible; reassign back -> not visible.
+    await place_seeded_sbus(session)
     await login(client, "admin", "StrongAdminPass!", "ADMIN")
-    await client.patch(
-        f"/api/admin/alcs/{seeded['alc_b'].id}", json={"sbu_id": str(seeded["sbu4"].id)}
+    moved = await client.patch(
+        f"/api/admin/alcs/{seeded['alc_b'].id}/sbu", json={"sbu_id": str(seeded["sbu4"].id)}
     )
+    assert moved.status_code == 200
     await switch(client)
     await login(client, "sbu-4", "StrongSbuPass4!", "SBU")
     codes = {r["alc_code"] for r in (await client.get("/api/portal/alcs")).json()["items"]}
     assert "00010002" in codes
     await switch(client)
     await login(client, "admin", "StrongAdminPass!", "ADMIN")
-    await client.patch(
-        f"/api/admin/alcs/{seeded['alc_b'].id}", json={"sbu_id": str(seeded["sbu6"].id)}
+    moved_back = await client.patch(
+        f"/api/admin/alcs/{seeded['alc_b'].id}/sbu", json={"sbu_id": str(seeded["sbu6"].id)}
     )
+    assert moved_back.status_code == 200
     await switch(client)
     await login(client, "sbu-4", "StrongSbuPass4!", "SBU")
     codes = {r["alc_code"] for r in (await client.get("/api/portal/alcs")).json()["items"]}

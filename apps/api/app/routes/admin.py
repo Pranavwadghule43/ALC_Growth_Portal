@@ -39,6 +39,7 @@ from app.models import (
 )
 from app.schemas import (
     ActivityOut,
+    AlcReassignIn,
     AlcStatusPatch,
     DcuOut,
     DecisionChangeIn,
@@ -46,6 +47,7 @@ from app.schemas import (
     SbuIn,
     SbuOut,
     SbuPatch,
+    SbuReassignIn,
     UserCreate,
     UserOut,
     UserPage,
@@ -56,6 +58,13 @@ from app.services.activities import FINAL_STATUSES, admin_activity, review_activ
 from app.services.audit import record_audit
 from app.services.csv_export import safe_csv
 from app.services.evidence_history import evidence_viewable
+from app.services.hierarchy_reassignment import (
+    alc_hierarchy,
+    reassign_alc,
+    reassign_sbu,
+    require_valid_dcu,
+    sbu_hierarchy,
+)
 from app.services.rollups import alc_activity_join
 from app.services.scope import submitted_workflow
 from app.services.sessions import revoke_user_sessions
@@ -567,6 +576,7 @@ async def alc_detail(
     ).all()
     return {
         "alc": alc,
+        "hierarchy": await alc_hierarchy(db, alc),
         "activities": [ActivityOut.model_validate(x) for x in activities],
         "partners": partners,
     }
@@ -585,19 +595,11 @@ async def update_alc_status(
         raise HTTPException(status_code=404, detail="ALC not found")
     provided = payload.model_fields_set
     changes: dict = {}
+    # SBU reassignment is only possible through PATCH /alcs/{alc_id}/sbu (the schema rejects
+    # ``sbu_id`` here), so this generic update never moves an ALC in the hierarchy.
     if "status" in provided and payload.status is not None:
         alc.status = payload.status
         changes["status"] = payload.status.value
-    if "sbu_id" in provided:
-        if payload.sbu_id is not None and not await db.scalar(
-            select(SBU.id).where(SBU.id == payload.sbu_id)
-        ):
-            raise HTTPException(status_code=422, detail="Invalid SBU")
-        # Reassignment moves only this pointer: the ALC keeps its id, users, activities,
-        # partners, evidence, reviews and revisions. Scope follows on the next request.
-        changes["previous_sbu_id"] = str(alc.sbu_id) if alc.sbu_id else None
-        alc.sbu_id = payload.sbu_id
-        changes["sbu_id"] = str(payload.sbu_id) if payload.sbu_id else None
     if not changes:
         raise HTTPException(status_code=422, detail="No changes supplied")
     await record_audit(db, "alc_updated", "alc", alc.id, admin, request, changes)
@@ -609,6 +611,19 @@ async def update_alc_status(
         "status": alc.status,
         "sbu_id": alc.sbu_id,
     }
+
+
+@router.patch("/alcs/{alc_id}/sbu")
+async def reassign_alc_sbu(
+    alc_id: uuid.UUID,
+    payload: AlcReassignIn,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Move an ALC to another active SBU (one pointer; history, users and passwords untouched).
+    Moving to the current SBU is a no-op returning ``changed: false``."""
+    return await reassign_alc(db, alc_id, payload.sbu_id, actor=admin, request=request)
 
 
 @router.post("/alcs/import/validate")
@@ -1061,10 +1076,10 @@ async def create_sbu(
 ):
     if await db.scalar(select(SBU.id).where(func.lower(SBU.code) == payload.code.lower())):
         raise HTTPException(status_code=409, detail="SBU code already exists")
-    if payload.dcu_id is not None and not await db.scalar(
-        select(DCU.id).where(DCU.id == payload.dcu_id)
-    ):
-        raise HTTPException(status_code=422, detail="Invalid DCU")
+    if payload.dcu_id is not None:
+        # Same placement rule as SBU -> DCU reassignment (active DCU in an active RCU). The
+        # DCU stays optional: an SBU may still be created unplaced.
+        await require_valid_dcu(db, payload.dcu_id)
     sbu = SBU(
         code=payload.code,
         name=payload.name,
@@ -1103,6 +1118,7 @@ async def sbu_detail(
     ).all()
     return {
         "sbu": SbuOut.model_validate(sbu),
+        "hierarchy": await sbu_hierarchy(db, sbu),
         "alcs": alcs_rows,
         "users": [UserOut.model_validate(u) for u in users_rows],
     }
@@ -1119,26 +1135,30 @@ async def update_sbu(
     sbu = await db.get(SBU, sbu_id)
     if not sbu:
         raise HTTPException(status_code=404, detail="SBU not found")
-    changes = payload.model_dump(exclude_none=True, exclude={"dcu_id"})
+    # DCU reassignment is only possible through PATCH /sbus/{sbu_id}/dcu (the schema rejects
+    # ``dcu_id`` here), so this generic update never moves an SBU in the hierarchy.
+    changes = payload.model_dump(exclude_none=True)
     if payload.name is not None:
         sbu.name = payload.name
     if payload.is_active is not None:
         sbu.is_active = payload.is_active
-    if "dcu_id" in payload.model_fields_set:
-        # Reassigning an SBU to another DCU moves only this pointer. The SBU keeps its id and
-        # every ALC, activity, partner, evidence file and review stays attached; DCU access
-        # follows the new hierarchy on the very next request.
-        if payload.dcu_id is not None and not await db.scalar(
-            select(DCU.id).where(DCU.id == payload.dcu_id)
-        ):
-            raise HTTPException(status_code=422, detail="Invalid DCU")
-        changes["dcu_id"] = str(payload.dcu_id) if payload.dcu_id else None
-        changes["previous_dcu_id"] = str(sbu.dcu_id) if sbu.dcu_id else None
-        sbu.dcu_id = payload.dcu_id
     await record_audit(db, "sbu_updated", "sbu", sbu.id, admin, request, changes)
     await db.commit()
     await db.refresh(sbu)
     return sbu
+
+
+@router.patch("/sbus/{sbu_id}/dcu")
+async def reassign_sbu_dcu(
+    sbu_id: uuid.UUID,
+    payload: SbuReassignIn,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Move an SBU, with all its ALCs, to another active DCU (one pointer). Moving to the
+    current DCU is a no-op returning ``changed: false``."""
+    return await reassign_sbu(db, sbu_id, payload.dcu_id, actor=admin, request=request)
 
 
 @router.get("/dcus")

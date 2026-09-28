@@ -17,6 +17,10 @@ export interface Page<T> { items: T[]; page: number; page_size: number; total: n
 
 // Hierarchy references and supervisor (DCU / SBU) portal shapes.
 export interface UnitRef { id: string; code: string; name: string }
+// Admin hierarchy reassignment: current placement and the option lists the pickers use.
+export interface Hierarchy { rcu: UnitRef | null; dcu: UnitRef | null; sbu?: UnitRef | null }
+export interface SbuOption extends Sbu { dcu_code?: string | null; assigned_alcs?: number }
+export interface DcuOption extends Dcu { rcu_code?: string; rcu_name?: string; sbus?: number; alcs?: number }
 export interface ActivityMetrics { activities: number; submitted: number; resubmitted: number; pending: number; corrections: number; verified: number; rejected: number; learners: number; leads: number; admissions: number }
 export interface SbuStats extends ActivityMetrics { alcs: number; active_alcs: number; inactive_alcs: number; partners: number }
 export interface SbuRow extends SbuStats { id: string; code: string; name: string; is_active: boolean; dcu_id?: string | null; dcu?: UnitRef | null }

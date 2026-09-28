@@ -422,9 +422,12 @@ async def test_dcu_has_no_admin_or_alc_write_surfaces(client, hier):
             json={"username": "evil", "role": "ADMIN", "password": "BrandNewPass1234!"},
         )
     ).status_code == 403
+    nashik_id = str(hier["dcus"]["DCU_NASHIK"].id)
     assert (
-        await client.patch(f"/api/admin/sbus/{hier['sbu1'].id}",
-                           json={"dcu_id": str(hier["dcus"]["DCU_NASHIK"].id)})
+        await client.patch(f"/api/admin/sbus/{hier['sbu1'].id}", json={"dcu_id": nashik_id})
+    ).status_code == 403
+    assert (
+        await client.patch(f"/api/admin/sbus/{hier['sbu1'].id}/dcu", json={"dcu_id": nashik_id})
     ).status_code == 403
     # DCU supervises; it never authors ALC records.
     assert (await client.post("/api/portal/activities", json=payload)).status_code == 403
@@ -520,9 +523,9 @@ async def test_alc_reassignment_moves_access_and_preserves_history(client, sessi
         alcs_before = await session.scalar(select(func.count(ALC.id)))
         await as_user(client, "admin", "StrongAdminPass!", "ADMIN")
         moved = await client.patch(
-            f"/api/admin/alcs/{centre.id}", json={"sbu_id": str(hier["sbu6"].id)}
+            f"/api/admin/alcs/{centre.id}/sbu", json={"sbu_id": str(hier["sbu6"].id)}
         )
-        assert moved.status_code == 200 and moved.json()["id"] == str(centre.id)
+        assert moved.status_code == 200 and moved.json()["alc"]["id"] == str(centre.id)
 
         # Same session, no re-login: the old SBU loses access immediately.
         assert (await old_sbu.get(f"/api/portal/activities/{aid}")).status_code == 404
@@ -573,12 +576,13 @@ async def test_sbu_dcu_reassignment_moves_access_and_preserves_history(client, s
 
         await as_user(client, "admin", "StrongAdminPass!", "ADMIN")
         moved = await client.patch(
-            f"/api/admin/sbus/{sbu7.id}", json={"dcu_id": str(hier["dcus"]["DCU_PUNE_NORTH"].id)}
+            f"/api/admin/sbus/{sbu7.id}/dcu",
+            json={"dcu_id": str(hier["dcus"]["DCU_PUNE_NORTH"].id)},
         )
-        assert moved.status_code == 200 and moved.json()["id"] == str(sbu7.id)
+        assert moved.status_code == 200 and moved.json()["sbu"]["id"] == str(sbu7.id)
         # A non-existent DCU is rejected.
         assert (
-            await client.patch(f"/api/admin/sbus/{sbu7.id}", json={"dcu_id": str(uuid.uuid4())})
+            await client.patch(f"/api/admin/sbus/{sbu7.id}/dcu", json={"dcu_id": str(uuid.uuid4())})
         ).status_code == 422
 
         # Existing sessions: the old DCU loses access at once, the new DCU gains it.
@@ -606,10 +610,16 @@ async def test_sbu_dcu_reassignment_moves_access_and_preserves_history(client, s
     await as_user(client, "sbu-7")
     assert (await client.get(f"/api/portal/activities/{aid}")).status_code == 200
 
-    # Explicit null detaches the SBU from any DCU: the region DCU fails closed.
+    # Detaching an SBU from its DCU is not possible through any Admin endpoint.
     await as_user(client, "admin", "StrongAdminPass!", "ADMIN")
     assert (
         await client.patch(f"/api/admin/sbus/{sbu7.id}", json={"dcu_id": None})
-    ).status_code == 200
+    ).status_code == 422
+    assert (
+        await client.patch(f"/api/admin/sbus/{sbu7.id}/dcu", json={"dcu_id": None})
+    ).status_code == 422
+    # Scope still fails closed if an SBU ever ends up without a DCU (data-level state).
+    sbu7.dcu_id = None
+    await session.commit()
     await as_user(client, "dcu-pn")
     assert (await client.get(f"/api/portal/activities/{aid}")).status_code == 404
