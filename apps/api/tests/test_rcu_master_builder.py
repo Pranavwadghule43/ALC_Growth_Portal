@@ -1,6 +1,11 @@
 """Phase 3B canonical RCU Pune master builder: DCU/SBU normalisation, ALC Code text handling,
-row checks, confirmed counts from the real source spreadsheets, explicit Active default,
-and acceptance of the output by the Phase 3A validator. The builder never uses a database."""
+row checks, confirmed counts, explicit Active default, and acceptance of the output by the
+Phase 3A validator. The builder never uses a database.
+
+Self-contained: the source spreadsheets are generated in a temp directory by
+``tests.rcu_fixtures`` (real source spellings, numeric code cells, confirmed per-SBU counts).
+The git-ignored real files are only used by the optional checks at the end, which are skipped
+when those files are not present (e.g. on a fresh clone)."""
 
 import argparse
 import csv
@@ -13,11 +18,17 @@ import pytest
 from app.services import master_import
 from scripts import build_rcu_master as builder
 from scripts.build_rcu_master import SourceRow
+from tests.rcu_fixtures import SOURCE_LAYOUT, source_rows, write_source_workbooks
 
 DATA = Path(__file__).resolve().parents[3] / "data"
-SOURCES = [DATA / "Ahilya_Nagar.xlsx", DATA / "Pune.xlsx"]
-NEW_MASTER = DATA / "RCU-PUNE-NEW-ALCS.csv"
-NASHIK_MASTER = DATA / "ALC-MASTER.csv"
+NASHIK_MASTER = DATA / "ALC-MASTER.csv"  # committed Nashik master (tracked in git)
+# Local, git-ignored real master data: only used by the optional checks at the end.
+REAL_SOURCES = [DATA / "Ahilya_Nagar.xlsx", DATA / "Pune.xlsx"]
+REAL_NEW_MASTER = DATA / "RCU-PUNE-NEW-ALCS.csv"
+requires_real_data = pytest.mark.skipif(
+    not all(p.exists() for p in [*REAL_SOURCES, REAL_NEW_MASTER]),
+    reason="local real master data (git-ignored) is not present",
+)
 
 
 def row(
@@ -54,9 +65,14 @@ def xlsx(*rows, number_format=None) -> bytes:
 
 
 @pytest.fixture(scope="module")
-def real():
-    rows = [r for path in SOURCES for r in builder.read_source(path)]
-    return builder.build(rows, "yes")
+def sources(tmp_path_factory):
+    """Synthetic ``Ahilya_Nagar.xlsx`` and ``Pune.xlsx`` in a module temp directory."""
+    return write_source_workbooks(tmp_path_factory.mktemp("rcu-sources"))
+
+
+@pytest.fixture(scope="module")
+def built(sources):
+    return builder.build([r for path in sources for r in builder.read_source(path)], "yes")
 
 
 # --------------------------------------------------------------------------- #
@@ -201,51 +217,66 @@ def test_active_default_is_required(flag):
 
 
 # --------------------------------------------------------------------------- #
-# Real source spreadsheets
+# Full-size representative sources (synthetic, confirmed counts)
 # --------------------------------------------------------------------------- #
-def test_real_sources_build_cleanly(real):
-    assert real.ok, real.errors[:5]
-    assert not real.warnings
+def test_sources_build_cleanly(built):
+    assert built.ok, built.errors[:5]
+    assert not built.warnings
 
 
-def test_expected_ahilya_nagar_counts(real):
-    assert real.counts["Ahilya Nagar"] == {
+def test_expected_ahilya_nagar_counts(built):
+    assert built.counts["Ahilya Nagar"] == {
         "Ahilyanagar_sbu1": 58,
         "Ahilyanagar_sbu2": 49,
         "Ahilyanagar_sbu5": 51,
         "Ahilyanagar_sbu10": 45,
     }
-    assert sum(real.counts["Ahilya Nagar"].values()) == 203
+    assert sum(built.counts["Ahilya Nagar"].values()) == 203
 
 
-def test_expected_pune_north_counts(real):
-    assert real.counts["Pune North"] == {
+def test_expected_pune_north_counts(built):
+    assert built.counts["Pune North"] == {
         "SBU_Pune_North_1": 53,
         "SBU_Pune_North_2": 48,
         "SBU_Pune_North_3": 55,
         "SBU_Pune_North_4": 52,
         "SBU_Pune_North_5": 55,
     }
-    assert sum(real.counts["Pune North"].values()) == 263
+    assert sum(built.counts["Pune North"].values()) == 263
 
 
-def test_expected_pune_south_counts(real):
-    assert real.counts["Pune South"] == {
+def test_expected_pune_south_counts(built):
+    assert built.counts["Pune South"] == {
         "pune_south_sbu_4": 46,
         "pune_south_sbu_2": 42,
         "pune_south_sbu_3": 31,
     }
-    assert sum(real.counts["Pune South"].values()) == 119
+    assert sum(built.counts["Pune South"].values()) == 119
 
 
-def test_total_new_count_is_585(real):
-    assert len(real.rows) == 585
-    assert sum(sum(s.values()) for s in real.counts.values()) == 585
-    assert "Nashik" not in real.counts
+def test_total_new_count_is_585(built):
+    assert len(built.rows) == 585
+    assert sum(sum(s.values()) for s in built.counts.values()) == 585
+    assert "Nashik" not in built.counts
 
 
-def test_canonical_six_column_output(real):
-    reader = csv.reader(io.StringIO(real.csv_bytes.decode()))
+def test_every_row_mapped_to_its_canonical_dcu_and_sbu(built):
+    expected = [(r["dcu"], r["sbu"]) for f in SOURCE_LAYOUT for r in source_rows(f)]
+    assert [(r["DCU"], r["SBU"]) for r in built.rows] == expected
+
+
+def test_normalisation_notes_report_counts(built):
+    notes = "\n".join(built.notes)
+    assert "DCU 'Ahilyanagar' -> 'Ahilya Nagar': 203 rows" in notes
+    assert "SBU 'Ahilyanaga_sbu10' -> 'Ahilyanagar_sbu10' (Ahilya Nagar): 45 rows" in notes
+    assert "SBU 'Bhagyashree Gaikwad' -> 'pune_south_sbu_4' (Pune South): 46 rows" in notes
+    assert "SBU 'Ajinkya Chavan' -> 'pune_south_sbu_2' (Pune South): 42 rows" in notes
+    assert "SBU 'Aniket Marne' -> 'pune_south_sbu_3' (Pune South): 31 rows" in notes
+    assert "585 ALC Codes were numeric spreadsheet cells" in notes
+
+
+def test_canonical_six_column_output(built):
+    reader = csv.reader(io.StringIO(built.csv_bytes.decode()))
     header = next(reader)
     assert header == ["RCU", "DCU", "SBU", "ALC Code", "ALC Name", "Active"]
     body = list(reader)
@@ -254,29 +285,33 @@ def test_canonical_six_column_output(real):
     assert {r[1] for r in body} == {"Ahilya Nagar", "Pune North", "Pune South"}
     assert {r[5] for r in body} == {"Yes"}
     assert not any(r[3].endswith(".0") for r in body)
+    for coordinator in ("Bhagyashree Gaikwad", "Ajinkya Chavan", "Aniket Marne"):
+        assert coordinator not in built.csv_bytes.decode()
 
 
-def test_source_codes_and_names_preserved_exactly(real):
+def test_source_codes_and_names_preserved_exactly(built, sources):
     source = []
-    for path in SOURCES:
+    for path in sources:
         sheet = openpyxl.load_workbook(path, data_only=True).active
         source += [(str(int(c)), n) for c, n, *_ in sheet.iter_rows(min_row=2, values_only=True)]
-    assert [(r["ALC Code"], r["ALC Name"]) for r in real.rows] == source
+    assert [(r["ALC Code"], r["ALC Name"]) for r in built.rows] == source
+    assert any("," in name for _, name in source)  # quoted names survive the round trip
 
 
-def test_output_accepted_by_phase3a_file_validator(real):
-    records = master_import.parse_source("m.csv", real.csv_bytes)
+def test_output_accepted_by_phase3a_file_validator(built):
+    records = master_import.parse_source("m.csv", built.csv_bytes)
     master_import.check_file(records)
     assert len(records) == 585
     assert [r.errors for r in records if r.errors] == []
 
 
-def test_committed_canonical_file_matches_builder(real):
-    assert NEW_MASTER.read_bytes() == real.csv_bytes
+def test_builder_output_is_deterministic(built, sources):
+    again = builder.build([r for path in sources for r in builder.read_source(path)], "yes")
+    assert again.csv_bytes == built.csv_bytes
 
 
-def test_complete_master_with_nashik_is_784():
-    rows = [r for path in SOURCES for r in builder.read_source(path)]
+def test_complete_master_with_nashik_is_784(sources):
+    rows = [r for path in sources for r in builder.read_source(path)]
     rows += builder.read_nashik(NASHIK_MASTER)
     result = builder.build(rows, "yes", include_nashik=True)
     assert result.ok, result.errors[:5]
@@ -284,8 +319,8 @@ def test_complete_master_with_nashik_is_784():
     assert len(result.rows) == 784
 
 
-def test_count_mismatch_blocks_unless_allowed():
-    rows = [r for r in builder.read_source(SOURCES[0])][:-1]  # drop one Ahilya Nagar ALC
+def test_count_mismatch_blocks_unless_allowed(sources):
+    rows = [r for r in builder.read_source(sources[0])][:-1]  # drop one Ahilya Nagar ALC
     blocked = builder.build(rows, "yes")
     assert not blocked.ok and blocked.csv_bytes == b""
     assert any("count mismatch" in e for e in blocked.errors)
@@ -314,15 +349,30 @@ def test_cli_refuses_to_write_when_errors_remain(tmp_path):
     assert not args.out.exists()
 
 
-def test_cli_writes_valid_master(tmp_path):
-    args = cli_args(tmp_path, SOURCES)
+def test_cli_writes_valid_master(tmp_path, sources, built):
+    args = cli_args(tmp_path, sources)
     assert builder.run(args) == 0
-    assert args.out.read_bytes() == NEW_MASTER.read_bytes()
+    assert args.out.read_bytes() == built.csv_bytes
 
 
 def test_cli_requires_default_active(monkeypatch, capsys):
-    monkeypatch.setattr("sys.argv", ["build_rcu_master", str(SOURCES[0])])
+    monkeypatch.setattr("sys.argv", ["build_rcu_master", "Ahilya_Nagar.xlsx"])
     with pytest.raises(SystemExit) as exc:
         builder.main()
     assert exc.value.code == 2
     assert "--default-active" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- #
+# Optional: the real, git-ignored source files (skipped when absent)
+# --------------------------------------------------------------------------- #
+@requires_real_data
+def test_real_sources_match_confirmed_counts_and_local_master():
+    result = builder.build([r for p in REAL_SOURCES for r in builder.read_source(p)], "yes")
+    assert result.ok, result.errors[:5]
+    assert {d: sum(c.values()) for d, c in result.counts.items()} == {
+        "Ahilya Nagar": 203,
+        "Pune North": 263,
+        "Pune South": 119,
+    }
+    assert REAL_NEW_MASTER.read_bytes() == result.csv_bytes

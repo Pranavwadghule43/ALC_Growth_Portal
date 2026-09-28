@@ -3,7 +3,11 @@
 The ``prod`` fixture reproduces the current production state: RCU Pune with its four DCUs
 (``ensure_hierarchy``), SBU 4 / 6 / 7 under DCU Nashik holding the 199-ALC Nashik master,
 plus one ALC login, an SBU login, and a partner / activity / evidence / review / revision on
-a Nashik ALC so that any unintended mutation is detected."""
+a Nashik ALC so that any unintended mutation is detected.
+
+The canonical 585-row master used by the importer tests is built in a temp directory from
+synthetic sources (``tests.rcu_fixtures``) with the real builder, so the tests do not need
+the git-ignored real master files."""
 
 from datetime import date
 from pathlib import Path
@@ -37,10 +41,10 @@ from app.services.master_mappings import (
     SBUS_BY_DCU,
     remaining_sbus,
 )
+from tests.rcu_fixtures import build_canonical_master
 
 DATA = Path(__file__).resolve().parents[3] / "data"
-NASHIK_MASTER = DATA / "ALC-MASTER.csv"
-NEW_MASTER = DATA / "RCU-PUNE-NEW-ALCS.csv"
+NASHIK_MASTER = DATA / "ALC-MASTER.csv"  # committed Nashik master (tracked in git)
 NASHIK = {
     "SBU 4": {"dcu": "DCU_NASHIK", "alcs": 71, "active": 71},
     "SBU 6": {"dcu": "DCU_NASHIK", "alcs": 58, "active": 58},
@@ -430,19 +434,39 @@ async def test_seed_touches_no_alc_user_activity_partner_evidence_review(prod):
 # --------------------------------------------------------------------------- #
 # Seed + canonical master through the Phase 3A importer (throwaway test DB only)
 # --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def new_master(tmp_path_factory):
+    """The canonical 585-row new-ALC master, built from synthetic sources."""
+    path = build_canonical_master(tmp_path_factory.mktemp("rcu-master"))
+    records = master_import.parse_source(path.name, path.read_bytes())
+    nashik = alc_import.parse_source(NASHIK_MASTER.name, NASHIK_MASTER.read_bytes())
+    assert len(records) == 585
+    assert not {r.alc_code for r in records} & {r.alc_code for r in nashik}
+    return path
+
+
+def test_new_master_fixture_is_canonical_and_valid(new_master):
+    records = master_import.parse_source(new_master.name, new_master.read_bytes())
+    master_import.check_file(records)
+    assert [r.errors for r in records if r.errors] == []
+    assert {r.rcu for r in records} == {"RCU Pune"}
+    assert {r.active for r in records} == {"Yes"}
+    assert {r.sbu for r in records} == set(EXPECTED_DCU)
+
+
 @pytest.mark.asyncio
-async def test_new_master_unknown_sbus_until_seeded(prod):
-    records = master_import.parse_source(NEW_MASTER.name, NEW_MASTER.read_bytes())
+async def test_new_master_unknown_sbus_until_seeded(prod, new_master):
+    records = master_import.parse_source(new_master.name, new_master.read_bytes())
     report = await master_import.validate(prod, records)
     assert report["counts"]["invalid"] == 585
     assert all(e.startswith("Unknown SBU") for row in report["invalid"] for e in row["errors"])
 
 
 @pytest.mark.asyncio
-async def test_seeded_hierarchy_accepts_new_master_as_585_creates(prod):
+async def test_seeded_hierarchy_accepts_new_master_as_585_creates(prod, new_master):
     await sbu_master.seed_remaining_sbus(prod)
     await prod.commit()
-    records = master_import.parse_source(NEW_MASTER.name, NEW_MASTER.read_bytes())
+    records = master_import.parse_source(new_master.name, new_master.read_bytes())
     report = await master_import.validate(prod, records)
     assert report["valid"], report["invalid"][:3]
     assert report["counts"] == {
@@ -460,10 +484,10 @@ async def test_seeded_hierarchy_accepts_new_master_as_585_creates(prod):
 
 
 @pytest.mark.asyncio
-async def test_end_to_end_in_test_db_reaches_784(prod):
+async def test_end_to_end_in_test_db_reaches_784(prod, new_master):
     await sbu_master.seed_remaining_sbus(prod)
     await prod.commit()
-    records = master_import.parse_source(NEW_MASTER.name, NEW_MASTER.read_bytes())
+    records = master_import.parse_source(new_master.name, new_master.read_bytes())
     summary = await master_import.perform(prod, records)
     assert (summary["created"], summary["updated"], summary["unchanged"]) == (585, 0, 0)
     per_dcu = {}
