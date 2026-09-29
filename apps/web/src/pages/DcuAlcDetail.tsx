@@ -3,19 +3,19 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import { ChevronLeft } from 'lucide-react'
 import { api } from '../lib/api'
-import type { Activity, ActivityMetrics, DirectoryPartner, UnitRef } from '../types'
+import type { ActivityListItem, ActivityMetrics, DirectoryPartner, UnitRef } from '../types'
 import { Badge, Empty, ErrorState, formatDate, formatNumber, Loading, MetricCard, PageHeader, RowActions, Toast } from '../components/ui'
-import { formatDateTime, resubmittedAt } from '../components/review'
+import { formatDateTime } from '../components/review'
 
 interface AlcDetail {
   alc: { id: string; alc_code: string; alc_name: string; status: string; sbu: UnitRef | null; dcu: UnitRef | null }
   summary: ActivityMetrics & { partners: number; active_partners: number }
-  activities: Activity[]; correction_required: Activity[]; partners: DirectoryPartner[]
+  activities: ActivityListItem[]; correction_required: ActivityListItem[]; partners: DirectoryPartner[]
 }
 
-function ActivityTable({ rows }: { rows: Activity[] }) {
+function ActivityTable({ rows }: { rows: ActivityListItem[] }) {
   return <div className="table-wrap"><table className="table-dense"><thead><tr><th>Activity</th><th>Status</th><th>Submitted</th><th className="text-right">Evidence</th><th className="text-right">Learners</th><th className="text-right">Leads</th><th className="text-right">Admissions</th><th>Actions</th></tr></thead>
-    <tbody>{rows.map(a => <tr key={a.id}><td><Link className="font-semibold text-navy hover:text-teal" to={`/portal/activities/${a.id}`}>{a.activity_number}</Link><p className="text-xs text-slate-500">{a.activity_type} · {formatDate(a.activity_date)}</p></td><td><Badge status={a.status} /></td><td className="text-sm">{formatDateTime(a.submitted_at)}{resubmittedAt(a) && <p className="text-xs text-violet-700">Resubmitted {formatDate(resubmittedAt(a))}</p>}</td><td className="text-right">{a.evidence.length}</td><td className="text-right">{formatNumber(a.learners_reached)}</td><td className="text-right">{formatNumber(a.leads_generated)}</td><td className="text-right">{formatNumber(a.admissions_generated)}</td><td><RowActions base="/portal/activities" id={a.id} status={a.status} /></td></tr>)}</tbody></table></div>
+    <tbody>{rows.map(a => <tr key={a.id}><td><Link className="font-semibold text-navy hover:text-teal" to={`/portal/activities/${a.id}`}>{a.activity_number}</Link><p className="text-xs text-slate-500">{a.activity_type} · {formatDate(a.activity_date)}</p></td><td><Badge status={a.status} /></td><td className="text-sm">{formatDateTime(a.submitted_at)}{a.resubmitted_at && <p className="text-xs text-violet-700">Resubmitted {formatDate(a.resubmitted_at)}</p>}</td><td className="text-right">{a.evidence_count}</td><td className="text-right">{formatNumber(a.learners_reached)}</td><td className="text-right">{formatNumber(a.leads_generated)}</td><td className="text-right">{formatNumber(a.admissions_generated)}</td><td><RowActions base="/portal/activities" id={a.id} status={a.status} /></td></tr>)}</tbody></table></div>
 }
 
 // Read-only ALC view for a DCU. The ALC master record is administered by Admin only; a DCU

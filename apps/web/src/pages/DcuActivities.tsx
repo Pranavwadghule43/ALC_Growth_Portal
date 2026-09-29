@@ -6,7 +6,7 @@ import { api } from '../lib/api'
 import { ACTIVITY_TYPES, toQuery, WORKFLOW_STATUSES } from '../lib/constants'
 import type { AlcOption, Page, QueueRow, SbuRow } from '../types'
 import { Badge, Empty, ErrorState, Filter, formatDate, formatNumber, Loading, PageHeader, Pager, REVIEWABLE_STATUSES } from '../components/ui'
-import { formatDateTime, hadCorrection, resubmittedAt } from '../components/review'
+import { formatDateTime } from '../components/review'
 
 // DCU activity monitoring (all submitted-workflow activities) and verification queue
 // (submitted / resubmitted awaiting a decision). Every filter is applied server-side and can
@@ -39,10 +39,10 @@ export default function DcuActivities({ queueOnly = false }: { queueOnly?: boole
         const reviewable = REVIEWABLE_STATUSES.includes(a.status)
         const action = <Link to={`${reviewBase}/${a.id}`} className={reviewable ? 'inline-flex items-center gap-1 rounded-md bg-teal px-2 py-1 text-xs font-semibold text-white hover:bg-teal/90' : 'inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-semibold text-navy hover:border-teal hover:text-teal'}>{reviewable ? <><ClipboardCheck className="h-3.5 w-3.5" />Review</> : <><Eye className="h-3.5 w-3.5" />View</>}</Link>
         const alcCell = <td><Link to={`/portal/alcs/${alc.id}`} className="font-medium hover:text-teal">{alc.alc_code}</Link><p className="text-xs text-slate-500">{alc.alc_name}</p></td>
-        const resub = resubmittedAt(a)
+        const resub = a.resubmitted_at
         return queueOnly
-          ? <tr key={a.id}>{alcCell}<td>{sbu?.code ?? '—'}</td><td><Link to={`${reviewBase}/${a.id}`} className="font-semibold text-navy hover:text-teal">{a.activity_number}</Link><p className="text-xs text-slate-500">{a.activity_type} · {formatDate(a.activity_date)}</p></td><td className="text-sm">{formatDateTime(resub ?? a.submitted_at)}</td><td><Badge status={a.status} /></td><td className="text-right">{a.evidence.length}</td><td>{hadCorrection(a) ? <span className="text-sm font-medium text-amber-800">Yes</span> : <span className="text-sm text-slate-400">No</span>}</td><td>{action}</td></tr>
-          : <tr key={a.id}><td><Link to={`${reviewBase}/${a.id}`} className="font-semibold text-navy hover:text-teal">{a.activity_number}</Link><p className="text-xs text-slate-500">{formatDate(a.activity_date)}</p></td>{alcCell}<td>{sbu?.code ?? '—'}</td><td>{a.activity_type}</td><td><Badge status={a.status} /></td><td className="text-sm">{formatDateTime(a.submitted_at)}{resub && <p className="text-xs text-violet-700">Resubmitted {formatDateTime(resub)}</p>}</td><td className="text-right">{a.evidence.length}</td><td className="whitespace-nowrap text-right tabular-nums">{formatNumber(a.learners_reached)} · {formatNumber(a.leads_generated)} · {formatNumber(a.admissions_generated)}</td><td>{action}</td></tr>
+          ? <tr key={a.id}>{alcCell}<td>{sbu?.code ?? '—'}</td><td><Link to={`${reviewBase}/${a.id}`} className="font-semibold text-navy hover:text-teal">{a.activity_number}</Link><p className="text-xs text-slate-500">{a.activity_type} · {formatDate(a.activity_date)}</p></td><td className="text-sm">{formatDateTime(resub ?? a.submitted_at)}</td><td><Badge status={a.status} /></td><td className="text-right">{a.evidence_count}</td><td>{a.had_correction ? <span className="text-sm font-medium text-amber-800">Yes</span> : <span className="text-sm text-slate-400">No</span>}</td><td>{action}</td></tr>
+          : <tr key={a.id}><td><Link to={`${reviewBase}/${a.id}`} className="font-semibold text-navy hover:text-teal">{a.activity_number}</Link><p className="text-xs text-slate-500">{formatDate(a.activity_date)}</p></td>{alcCell}<td>{sbu?.code ?? '—'}</td><td>{a.activity_type}</td><td><Badge status={a.status} /></td><td className="text-sm">{formatDateTime(a.submitted_at)}{resub && <p className="text-xs text-violet-700">Resubmitted {formatDateTime(resub)}</p>}</td><td className="text-right">{a.evidence_count}</td><td className="whitespace-nowrap text-right tabular-nums">{formatNumber(a.learners_reached)} · {formatNumber(a.leads_generated)} · {formatNumber(a.admissions_generated)}</td><td>{action}</td></tr>
       })}</tbody>
     </table></div><Pager page={data.page} pages={data.pages} total={data.total} noun="activities" onPage={setPage} /></>}
   </>

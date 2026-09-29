@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../lib/api'
-import type { Activity, Alc, Partner } from '../types'
+import type { ActivityListItem, Alc, Partner } from '../types'
 import { Badge, Empty, ErrorState, formatDate, Loading, MetricCard, PageHeader, RowActions, Toast } from '../components/ui'
 
 const PENDING = ['SUBMITTED', 'RESUBMITTED', 'UNDER_REVIEW']
@@ -12,7 +12,7 @@ export default function SbuAlcDetail() {
   const { id } = useParams()
   const [password, setPassword] = useState(''); const [confirmPassword, setConfirmPassword] = useState(''); const [message, setMessage] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false)
   const closeToast = useCallback(() => setMessage(''), [])
-  const q = useQuery({ queryKey: ['sbu-alc-detail', id], queryFn: () => api.get<{ alc: Alc; activities: Activity[]; partners: Partner[] }>(`/portal/alcs/${id}`) })
+  const q = useQuery({ queryKey: ['sbu-alc-detail', id], queryFn: () => api.get<{ alc: Alc; activities: ActivityListItem[]; partners: Partner[] }>(`/portal/alcs/${id}`) })
   async function resetPassword(e: React.FormEvent, centre: string) {
     e.preventDefault(); setMessage(''); setError('')
     if (password !== confirmPassword) { setError('The two passwords do not match.'); return }

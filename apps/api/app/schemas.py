@@ -165,6 +165,39 @@ class ActivityOut(ActivityIn, ORMModel):
         return [item for item in value if getattr(item, "is_active", True)]
 
 
+class ActivityListOut(BaseModel):
+    """Lean activity row for list, queue, dashboard and ALC-detail tables.
+
+    Carries only what those screens display: no evidence, review or revision objects and no
+    revision snapshots. The per-activity summaries are computed in SQL (see
+    ``app.services.activity_lists``). Detail / review endpoints keep returning ``ActivityOut``.
+    """
+
+    id: uuid.UUID
+    activity_number: str
+    alc_id: uuid.UUID
+    activity_type: str
+    activity_date: date
+    status: ActivityStatus
+    submitted_at: datetime | None
+    updated_at: datetime
+    learners_reached: int
+    leads_generated: int
+    admissions_generated: int
+    partner_name: str | None = None
+    # Active (current) evidence files; removed historical evidence is not counted.
+    evidence_count: int = 0
+    # Submission snapshots (1 = submitted once; 2+ = resubmitted after correction).
+    revision_count: int = 0
+    # Time of the latest resubmission (the newest revision, when there are two or more).
+    resubmitted_at: datetime | None = None
+    # A reviewer has requested a correction at least once.
+    had_correction: bool = False
+    # Latest review that carried a remark, and its action.
+    last_remark: str | None = None
+    last_remark_action: ReviewAction | None = None
+
+
 class _ActivityWithHistory:
     """Read-only view of an Activity plus its removed evidence, for ActivityOut."""
 

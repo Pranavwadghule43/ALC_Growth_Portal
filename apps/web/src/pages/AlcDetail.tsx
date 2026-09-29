@@ -2,14 +2,14 @@ import { useCallback, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../lib/api'
-import type { Activity, Alc, DcuOption, Hierarchy, Page, Partner, SbuOption } from '../types'
+import type { ActivityListItem, Alc, DcuOption, Hierarchy, Page, Partner, SbuOption } from '../types'
 import { Badge, ConfirmDialog, ErrorState, formatDate, Loading, MetricCard, PageHeader, RowActions, Toast } from '../components/ui'
 
 const dcuLabel = (name?: string | null) => (name ?? '—').replace(/^DCU /, '')
 
 export default function AlcDetail() {
   const { id } = useParams(); const client = useQueryClient()
-  const q = useQuery({ queryKey: ['alc-detail', id], queryFn: () => api.get<{ alc: Alc; hierarchy: Hierarchy; activities: Activity[]; partners: Partner[] }>(`/admin/alcs/${id}`) })
+  const q = useQuery({ queryKey: ['alc-detail', id], queryFn: () => api.get<{ alc: Alc; hierarchy: Hierarchy; activities: ActivityListItem[]; partners: Partner[] }>(`/admin/alcs/${id}`) })
   const sbus = useQuery({ queryKey: ['sbus-options'], queryFn: () => api.get<Page<SbuOption>>('/admin/sbus?page=1&page_size=100') })
   const dcus = useQuery({ queryKey: ['dcus-options'], queryFn: () => api.get<{ items: DcuOption[] }>('/admin/dcus') })
   const [target, setTarget] = useState('')

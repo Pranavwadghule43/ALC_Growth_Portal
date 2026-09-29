@@ -18,11 +18,6 @@ export function resubmittedAt(activity: Activity) {
   return revisions.length > 1 ? revisions[revisions.length - 1]?.created_at : undefined
 }
 
-// True when the activity was sent back for correction at least once.
-export function hadCorrection(activity: Activity) {
-  return activity.reviews.some(r => r.new_status === 'CORRECTION_REQUIRED')
-}
-
 export function ActivityDetails({ activity: a }: { activity: Activity }) {
   const facts: [string, string][] = [
     ['Activity type', a.activity_type], ['Activity date', formatDate(a.activity_date)], ['Partner', a.partner?.partner_name ?? '—'],

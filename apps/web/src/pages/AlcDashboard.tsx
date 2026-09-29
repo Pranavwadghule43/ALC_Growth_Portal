@@ -2,11 +2,11 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { AlertTriangle, ChevronRight } from 'lucide-react'
 import { api } from '../lib/api'
-import type { Activity, Task } from '../types'
+import type { ActivityListItem, Task } from '../types'
 import { Badge, ErrorState, formatDate, formatNumber, Loading, MetricCard, PageHeader } from '../components/ui'
 
 interface Notice { id:string; title:string; message:string; is_read:boolean; created_at:string; entity_type?:string|null; entity_id?:string|null }
-interface Dashboard { activities: number; pending: number; verified: number; corrections: number; rejected: number; learners: number; leads: number; admissions: number; active_partners: number; recent_activities: Activity[]; upcoming_tasks: Task[]; notifications: Notice[]; challenge: { targets: Record<string,number>; achieved: Record<string,number> } }
+interface Dashboard { activities: number; pending: number; verified: number; corrections: number; rejected: number; learners: number; leads: number; admissions: number; active_partners: number; recent_activities: ActivityListItem[]; upcoming_tasks: Task[]; notifications: Notice[]; challenge: { targets: Record<string,number>; achieved: Record<string,number> } }
 const CORRECTIONS_URL = '/portal/activities?status=CORRECTION_REQUIRED'
 
 export default function AlcDashboard() {

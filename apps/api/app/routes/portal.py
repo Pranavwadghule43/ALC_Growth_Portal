@@ -65,6 +65,7 @@ from app.services.activities import (
     review_activity,
     submit_activity,
 )
+from app.services.activity_lists import activity_list_query, activity_search, lean_activities
 from app.services.audit import record_audit
 from app.services.csv_export import safe_csv, streaming_csv_response
 from app.services.evidence_history import evidence_viewable, is_historical
@@ -305,15 +306,17 @@ async def alc_dashboard(user: User, db: AsyncSession) -> dict:
             Partner.alc_id == user.alc_id, Partner.status == "ACTIVE"
         )
     )
-    recent = (
-        await db.scalars(
-            select(Activity)
-            .options(*ACTIVITY_LOADERS)
-            .where(base)
-            .order_by(desc(Activity.updated_at))
-            .limit(6)
-        )
-    ).all()
+    recent = await lean_activities(
+        db,
+        (
+            await db.execute(
+                activity_list_query()
+                .where(base)
+                .order_by(desc(Activity.updated_at), desc(Activity.id))
+                .limit(6)
+            )
+        ).all(),
+    )
     tasks = (
         await db.scalars(
             select(Task)
@@ -334,7 +337,7 @@ async def alc_dashboard(user: User, db: AsyncSession) -> dict:
         "role": Role.ALC.value,
         **row,
         "active_partners": active_partners or 0,
-        "recent_activities": [ActivityOut.model_validate(x) for x in recent],
+        "recent_activities": recent,
         "upcoming_tasks": [TaskOut.model_validate(x) for x in tasks],
         "notifications": notifications,
         "challenge": await challenge_data(user, db),
@@ -369,22 +372,21 @@ async def supervisor_dashboard(user: User, db: AsyncSession) -> dict:
             totals[key] += row[key]
     rows = (
         await db.execute(
-            select(Activity, ALC, SBU.code)
+            activity_list_query(ALC.alc_code, ALC.alc_name, SBU.code.label("sbu_code"))
             .join(ALC, Activity.alc_id == ALC.id)
             .outerjoin(SBU, ALC.sbu_id == SBU.id)
-            .options(*ACTIVITY_LOADERS)
             .where(activity_scope(user))
-            .order_by(desc(Activity.submitted_at), desc(Activity.updated_at))
+            .order_by(desc(Activity.submitted_at), desc(Activity.updated_at), desc(Activity.id))
             .limit(8)
         )
     ).all()
     recent = [
         {
-            "activity": ActivityOut.model_validate(activity),
-            "alc": {"id": alc.id, "alc_code": alc.alc_code, "alc_name": alc.alc_name},
-            "sbu_code": sbu_code,
+            "activity": activity,
+            "alc": {"id": row.alc_id, "alc_code": row.alc_code, "alc_name": row.alc_name},
+            "sbu_code": row.sbu_code,
         }
-        for activity, alc, sbu_code in rows
+        for activity, row in zip(await lean_activities(db, rows), rows, strict=True)
     ]
     unit = None
     if user.role == Role.DCU and user.dcu is not None:
@@ -449,18 +451,17 @@ async def list_activities(
             )
         )
     total = await db.scalar(select(func.count(Activity.id)).where(*filters)) or 0
-    items = (
-        await db.scalars(
-            select(Activity)
-            .options(*ACTIVITY_LOADERS)
+    rows = (
+        await db.execute(
+            activity_list_query()
             .where(*filters)
-            .order_by(desc(Activity.updated_at))
+            .order_by(desc(Activity.updated_at), desc(Activity.id))
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
     ).all()
     return {
-        "items": [ActivityOut.model_validate(x) for x in items],
+        "items": await lean_activities(db, rows),
         "page": page,
         "page_size": page_size,
         "total": total,
@@ -968,6 +969,17 @@ async def supervisor_alcs(
         .scalar_subquery()
     )
     total = await db.scalar(select(func.count(ALC.id)).where(*filters)) or 0
+    # Choose the page of in-scope ALCs first, then aggregate activities for those ALCs only
+    # (the scope filters are re-applied, so the page can never widen the caller's scope).
+    page_ids = list(
+        await db.scalars(
+            select(ALC.id)
+            .where(*filters)
+            .order_by(ALC.alc_code)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    )
     rows = (
         (
             await db.execute(
@@ -1009,15 +1021,15 @@ async def supervisor_alcs(
                 .outerjoin(SBU, ALC.sbu_id == SBU.id)
                 .outerjoin(DCU, SBU.dcu_id == DCU.id)
                 .outerjoin(Activity, alc_activity_join())
-                .where(*filters)
+                .where(ALC.id.in_(page_ids), *filters)
                 .group_by(ALC.id, SBU.id, DCU.id)
                 .order_by(ALC.alc_code)
-                .offset((page - 1) * page_size)
-                .limit(page_size)
             )
         )
         .mappings()
         .all()
+        if page_ids
+        else []
     )
     return {
         "items": rows,
@@ -1075,23 +1087,25 @@ async def supervisor_alc_detail(
         raise HTTPException(status_code=404, detail="ALC not found")
     visible = [Activity.alc_id == alc.id, activity_scope(user)]
     summary = await activity_totals(db, *visible)
-    activities = (
-        await db.scalars(
-            select(Activity)
-            .options(*ACTIVITY_LOADERS)
-            .where(*visible)
-            .order_by(desc(Activity.updated_at))
-            .limit(100)
-        )
-    ).all()
-    corrections = (
-        await db.scalars(
-            select(Activity)
-            .options(*ACTIVITY_LOADERS)
-            .where(*visible, Activity.status == ActivityStatus.CORRECTION_REQUIRED)
-            .order_by(desc(Activity.updated_at))
-        )
-    ).all()
+    newest_first = (desc(Activity.updated_at), desc(Activity.id))
+    activities = await lean_activities(
+        db,
+        (
+            await db.execute(
+                activity_list_query().where(*visible).order_by(*newest_first).limit(100)
+            )
+        ).all(),
+    )
+    corrections = await lean_activities(
+        db,
+        (
+            await db.execute(
+                activity_list_query()
+                .where(*visible, Activity.status == ActivityStatus.CORRECTION_REQUIRED)
+                .order_by(*newest_first)
+            )
+        ).all(),
+    )
     partner_activities, partner_last = partner_activity_stats()
     partner_rows = (
         await db.execute(
@@ -1115,8 +1129,8 @@ async def supervisor_alc_detail(
             "partners": len(partner_rows),
             "active_partners": sum(1 for p, _, _ in partner_rows if p.status == "ACTIVE"),
         },
-        "activities": [ActivityOut.model_validate(x) for x in activities],
-        "correction_required": [ActivityOut.model_validate(x) for x in corrections],
+        "activities": activities,
+        "correction_required": corrections,
         "partners": [
             {
                 **PartnerOut.model_validate(partner).model_dump(),
@@ -1301,44 +1315,41 @@ async def supervisor_verification_queue(
     if date_to:
         filters.append(Activity.activity_date <= date_to)
     if search:
-        filters.append(
-            or_(
-                Activity.activity_number.ilike(f"%{search}%"),
-                ALC.alc_code.ilike(f"%{search}%"),
-                ALC.alc_name.ilike(f"%{search}%"),
-            )
-        )
-    total = (
-        await db.scalar(
-            select(func.count(Activity.id)).join(ALC, Activity.alc_id == ALC.id).where(*filters)
-        )
-        or 0
-    )
+        # Activity number or ALC code / name; ALC matches are resolved as an id subquery
+        # (and still intersected with the caller's scope), so the count needs no join.
+        filters.append(activity_search(f"%{search}%", partners=False))
+    total = await db.scalar(select(func.count(Activity.id)).where(*filters)) or 0
     rows = (
         await db.execute(
-            select(Activity, ALC, SBU.id, SBU.code)
+            activity_list_query(
+                ALC.alc_code,
+                ALC.alc_name,
+                ALC.status.label("alc_status"),
+                SBU.id.label("sbu_id"),
+                SBU.code.label("sbu_code"),
+            )
             .join(ALC, Activity.alc_id == ALC.id)
             .outerjoin(SBU, ALC.sbu_id == SBU.id)
-            .options(*ACTIVITY_LOADERS)
             .where(*filters)
             .order_by(desc(Activity.submitted_at), desc(Activity.updated_at), Activity.id)
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
     ).all()
+    activities = await lean_activities(db, rows)
     return {
         "items": [
             {
-                "activity": ActivityOut.model_validate(activity),
+                "activity": activity,
                 "alc": {
-                    "id": alc.id,
-                    "alc_code": alc.alc_code,
-                    "alc_name": alc.alc_name,
-                    "status": alc.status,
+                    "id": row.alc_id,
+                    "alc_code": row.alc_code,
+                    "alc_name": row.alc_name,
+                    "status": row.alc_status,
                 },
-                "sbu": {"id": sbu_id, "code": sbu_code} if sbu_id else None,
+                "sbu": {"id": row.sbu_id, "code": row.sbu_code} if row.sbu_id else None,
             }
-            for activity, alc, sbu_id, sbu_code in rows
+            for activity, row in zip(activities, rows, strict=True)
         ],
         "page": page,
         "page_size": page_size,

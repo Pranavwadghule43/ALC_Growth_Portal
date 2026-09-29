@@ -52,6 +52,7 @@ from app.schemas import (
 )
 from app.services import alc_import
 from app.services.activities import FINAL_STATUSES, admin_activity, review_activity
+from app.services.activity_lists import activity_list_query, activity_search, lean_activities
 from app.services.audit import record_audit
 from app.services.csv_export import streaming_csv_response
 from app.services.evidence_history import evidence_viewable
@@ -209,14 +210,10 @@ def queue_filters(status, activity_type, ecosystem, alc_id, date_from, date_to, 
     if date_to:
         filters.append(Activity.submitted_at < date_to)
     if search:
-        filters.append(
-            or_(
-                Activity.activity_number.ilike(f"%{search}%"),
-                ALC.alc_code.ilike(f"%{search}%"),
-                ALC.alc_name.ilike(f"%{search}%"),
-                Partner.partner_name.ilike(f"%{search}%"),
-            )
-        )
+        # Activity number, ALC code / name or partner name. ALC and partner matches are
+        # resolved as id subqueries, so every filter is on ``activities`` columns and the
+        # count needs no join.
+        filters.append(activity_search(f"%{search}%", partners=True))
     return filters
 
 
@@ -248,46 +245,33 @@ async def activities(
     filters = base + queue_filters(
         status, activity_type, ecosystem, alc_id, date_from, date_to, search
     )
-    joined = (
-        select(Activity, ALC)
-        .join(ALC, Activity.alc_id == ALC.id)
-        .outerjoin(Partner, Activity.partner_id == Partner.id)
-        .where(*filters)
-    )
-    total = (
-        await db.scalar(
-            select(func.count(Activity.id))
-            .join(ALC, Activity.alc_id == ALC.id)
-            .outerjoin(Partner, Activity.partner_id == Partner.id)
-            .where(*filters)
-        )
-        or 0
-    )
+    # Every filter is on ``activities`` columns, so the exact total needs no join.
+    total = await db.scalar(select(func.count(Activity.id)).where(*filters)) or 0
     rows = (
         await db.execute(
-            joined.options(
-                selectinload(Activity.partner),
-                selectinload(Activity.evidence),
-                selectinload(Activity.reviews),
-                selectinload(Activity.revisions),
+            activity_list_query(
+                ALC.alc_code, ALC.alc_name, ALC.status.label("alc_status")
             )
-            .order_by(desc(Activity.submitted_at), desc(Activity.updated_at))
+            .join(ALC, Activity.alc_id == ALC.id)
+            .where(*filters)
+            .order_by(desc(Activity.submitted_at), desc(Activity.updated_at), desc(Activity.id))
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
     ).all()
+    activities = await lean_activities(db, rows)
     return {
         "items": [
             {
-                "activity": ActivityOut.model_validate(activity),
+                "activity": activity,
                 "alc": {
-                    "id": alc.id,
-                    "alc_code": alc.alc_code,
-                    "alc_name": alc.alc_name,
-                    "status": alc.status,
+                    "id": row.alc_id,
+                    "alc_code": row.alc_code,
+                    "alc_name": row.alc_name,
+                    "status": row.alc_status,
                 },
             }
-            for activity, alc in rows
+            for activity, row in zip(activities, rows, strict=True)
         ],
         "page": page,
         "page_size": page_size,
@@ -470,6 +454,21 @@ async def evidence_content(
     return Response(content, media_type=evidence.mime_type, headers={"Cache-Control": "private, no-store"})
 
 
+async def paged_alc_ids(
+    db: AsyncSession, filters: list, page: int, page_size: int
+) -> list[uuid.UUID]:
+    """Ids of one directory page of ALCs (``filters`` applied, ordered by ALC code)."""
+    return list(
+        await db.scalars(
+            select(ALC.id)
+            .where(*filters)
+            .order_by(ALC.alc_code)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    )
+
+
 @router.get("/alcs")
 async def alcs(
     page_data: tuple[int, int] = Depends(pagination),
@@ -485,6 +484,8 @@ async def alcs(
     if status:
         filters.append(ALC.status == status)
     total = await db.scalar(select(func.count(ALC.id)).where(*filters)) or 0
+    # Choose the page of ALCs first, then aggregate activities for those ALCs only.
+    page_ids = await paged_alc_ids(db, filters, page, page_size)
     rows = (
         (
             await db.execute(
@@ -526,15 +527,15 @@ async def alcs(
                     func.max(Activity.activity_date).label("last_activity"),
                 )
                 .outerjoin(Activity, alc_activity_join())
-                .where(*filters)
+                .where(ALC.id.in_(page_ids))
                 .group_by(ALC.id)
                 .order_by(ALC.alc_code)
-                .offset((page - 1) * page_size)
-                .limit(page_size)
             )
         )
         .mappings()
         .all()
+        if page_ids
+        else []
     )
     return {
         "items": rows,
@@ -552,20 +553,17 @@ async def alc_detail(
     alc = await db.get(ALC, alc_id)
     if not alc:
         raise HTTPException(status_code=404, detail="ALC not found")
-    activities = (
-        await db.scalars(
-            select(Activity)
-            .options(
-                selectinload(Activity.partner),
-                selectinload(Activity.evidence),
-                selectinload(Activity.reviews),
-                selectinload(Activity.revisions),
+    activities = await lean_activities(
+        db,
+        (
+            await db.execute(
+                activity_list_query()
+                .where(Activity.alc_id == alc_id, submitted_workflow())
+                .order_by(desc(Activity.updated_at), desc(Activity.id))
+                .limit(100)
             )
-            .where(Activity.alc_id == alc_id, submitted_workflow())
-            .order_by(desc(Activity.updated_at))
-            .limit(100)
-        )
-    ).all()
+        ).all(),
+    )
     partners = (
         await db.scalars(
             select(Partner).where(Partner.alc_id == alc_id).order_by(Partner.partner_name)
@@ -574,7 +572,7 @@ async def alc_detail(
     return {
         "alc": alc,
         "hierarchy": await alc_hierarchy(db, alc),
-        "activities": [ActivityOut.model_validate(x) for x in activities],
+        "activities": activities,
         "partners": partners,
     }
 
@@ -730,6 +728,8 @@ async def challenge_progress(
         else []
     )
     total = await db.scalar(select(func.count(ALC.id)).where(*filters)) or 0
+    # Choose the page of ALCs first, then aggregate activities for those ALCs only.
+    page_ids = await paged_alc_ids(db, filters, page, page_size)
     rows = (
         (
             await db.execute(
@@ -774,15 +774,15 @@ async def challenge_progress(
                         Activity.activity_date <= today,
                     ),
                 )
-                .where(*filters)
+                .where(ALC.id.in_(page_ids))
                 .group_by(ALC.id)
                 .order_by(ALC.alc_code)
-                .offset((page - 1) * page_size)
-                .limit(page_size)
             )
         )
         .mappings()
         .all()
+        if page_ids
+        else []
     )
     return {
         "items": rows,

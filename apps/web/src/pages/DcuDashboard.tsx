@@ -2,13 +2,13 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 import { api } from '../lib/api'
-import type { Activity, SbuStats, UnitRef } from '../types'
+import type { ActivityListItem, SbuStats, UnitRef } from '../types'
 import { Badge, ErrorState, formatDate, formatNumber, Loading, MetricCard, PageHeader } from '../components/ui'
 
 interface DcuDash extends Omit<SbuStats, 'alcs'> {
   role: string; unit: (UnitRef & { type: string }) | null; sbus: number; assigned_alcs: number
   sbu_breakdown: (SbuStats & { id: string; code: string; name: string; is_active: boolean })[]
-  recent_activities: { activity: Activity; alc: { id: string; alc_code: string; alc_name: string }; sbu_code?: string | null }[]
+  recent_activities: { activity: ActivityListItem; alc: { id: string; alc_code: string; alc_name: string }; sbu_code?: string | null }[]
 }
 
 function Group({ title, children }: { title: string; children: React.ReactNode }) {

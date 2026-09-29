@@ -2,14 +2,14 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { Building2, ClipboardCheck, FileBarChart, Users } from 'lucide-react'
 import { api } from '../lib/api'
-import type { Activity } from '../types'
+import type { ActivityListItem } from '../types'
 import { Badge, ErrorState, formatDate, formatNumber, Loading, MetricCard, PageHeader } from '../components/ui'
 
 interface SbuDash {
   assigned_alcs: number; active_alcs: number; partners: number; activities: number; submitted: number
   pending: number; verified: number; corrections: number; rejected: number
   learners: number; leads: number; admissions: number
-  recent_activities: { activity: Activity; alc: { id: string; alc_code: string; alc_name: string } }[]
+  recent_activities: { activity: ActivityListItem; alc: { id: string; alc_code: string; alc_name: string } }[]
 }
 
 const quickLinks = [

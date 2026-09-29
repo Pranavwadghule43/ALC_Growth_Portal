@@ -196,8 +196,12 @@ async def test_alc_move_preserves_identity_history_and_moves_access(client, sess
     admin_detail = (await client.get(f"/api/admin/alcs/{centre.id}")).json()
     assert admin_detail["hierarchy"]["sbu"]["code"] == "SBU 6"
     (admin_activity,) = [a for a in admin_detail["activities"] if a["id"] == aid]
-    assert len(admin_activity["evidence"]) == 1 and len(admin_activity["revisions"]) == 2
-    assert (await client.get(f"/api/admin/activities/{aid}")).status_code == 200
+    # The ALC-detail activity list is lean (counts); the activity detail has the full history.
+    assert admin_activity["evidence_count"] == 1 and admin_activity["revision_count"] == 2
+    full = await client.get(f"/api/admin/activities/{aid}")
+    assert full.status_code == 200
+    assert len(full.json()["activity"]["evidence"]) == 1
+    assert len(full.json()["activity"]["revisions"]) == 2
 
     # 31. One audit entry with old/new hierarchy and the acting admin; no credentials.
     (entry,) = await audits(session, "alc_reassigned")
