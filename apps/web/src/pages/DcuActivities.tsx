@@ -4,6 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { ClipboardCheck, Eye } from 'lucide-react'
 import { api } from '../lib/api'
 import { ACTIVITY_TYPES, toQuery, WORKFLOW_STATUSES } from '../lib/constants'
+import { useDebouncedSearch, usePageFor } from '../lib/hooks'
 import type { AlcOption, Page, QueueRow, SbuRow } from '../types'
 import { Badge, Empty, ErrorState, Filter, formatDate, formatNumber, Loading, PageHeader, Pager, REVIEWABLE_STATUSES } from '../components/ui'
 import { formatDateTime } from '../components/review'
@@ -13,12 +14,15 @@ import { formatDateTime } from '../components/review'
 // only narrow the DCU's own scope.
 export default function DcuActivities({ queueOnly = false }: { queueOnly?: boolean }) {
   const [params] = useSearchParams()
-  const [page, setPage] = useState(1)
   const [filters, setFilters] = useState({ sbu_id: params.get('sbu_id') ?? '', alc_id: params.get('alc_id') ?? '', status: params.get('status') ?? '', activity_type: '', date_from: '', date_to: '', search: '' })
-  const update = (patch: Partial<typeof filters>) => { setFilters(f => ({ ...f, ...patch })); setPage(1) }
+  const update = (patch: Partial<typeof filters>) => setFilters(f => ({ ...f, ...patch }))
+  // Search text is debounced; selects and dates apply at once. Any change returns to page 1.
+  const search = useDebouncedSearch(filters.search)
+  const applied = { ...filters, search }
+  const [page, setPage] = usePageFor(JSON.stringify(applied))
   const sbus = useQuery({ queryKey: ['dcu-sbus'], queryFn: () => api.get<{ items: SbuRow[] }>('/portal/sbus') })
   const alcs = useQuery({ queryKey: ['alc-options', filters.sbu_id], queryFn: () => api.get<{ items: AlcOption[] }>(`/portal/lookups/alcs${filters.sbu_id ? `?sbu_id=${filters.sbu_id}` : ''}`) })
-  const query = toQuery({ page, page_size: 25, queue_only: queueOnly, ...filters, status: queueOnly ? '' : filters.status, search: filters.search.trim() })
+  const query = toQuery({ page, page_size: 25, queue_only: queueOnly, ...applied, status: queueOnly ? '' : filters.status })
   const { data, isLoading, error } = useQuery({ queryKey: ['dcu-activities', query], queryFn: () => api.get<Page<QueueRow>>(`/portal/verification?${query}`), placeholderData: prev => prev })
   const reviewBase = queueOnly ? '/portal/verification' : '/portal/activities'
   return <><PageHeader title={queueOnly ? 'Verification Queue' : 'Activity Monitoring'} description={queueOnly ? 'Submitted and resubmitted activities across your DCU awaiting a review decision, oldest submissions last.' : 'Every submitted activity across your SBUs and ALCs. Drafts stay private to each ALC.'} />

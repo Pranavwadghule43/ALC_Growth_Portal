@@ -4,18 +4,21 @@ import { Link } from 'react-router-dom'
 import { Eye } from 'lucide-react'
 import { api } from '../lib/api'
 import { toQuery } from '../lib/constants'
+import { useDebouncedSearch, usePageFor } from '../lib/hooks'
 import type { AlcDirectoryRow, Page, SbuRow } from '../types'
 import { Badge, Empty, ErrorState, Filter, formatDate, formatNumber, Loading, Pager } from './ui'
 
 // Server-side paginated, filtered ALC directory (``GET /portal/alcs``). Used by the DCU ALC
 // directory and inside an SBU's detail page. Only the current page is ever fetched.
 export function AlcDirectory({ fixedSbuId, showSbuFilter = false }: { fixedSbuId?: string; showSbuFilter?: boolean }) {
-  const [page, setPage] = useState(1)
   const [filters, setFilters] = useState({ search: '', status: '', sbu_id: '' })
-  const update = (patch: Partial<typeof filters>) => { setFilters(f => ({ ...f, ...patch })); setPage(1) }
+  const update = (patch: Partial<typeof filters>) => setFilters(f => ({ ...f, ...patch }))
   const sbus = useQuery({ queryKey: ['dcu-sbus'], queryFn: () => api.get<{ items: SbuRow[] }>('/portal/sbus'), enabled: showSbuFilter })
   const sbuId = fixedSbuId ?? filters.sbu_id
-  const query = toQuery({ page, page_size: 25, search: filters.search.trim(), status: filters.status, sbu_id: sbuId })
+  // Search text is debounced; selects apply at once. Any change returns to page 1.
+  const search = useDebouncedSearch(filters.search)
+  const [page, setPage] = usePageFor(JSON.stringify([search, filters.status, sbuId]))
+  const query = toQuery({ page, page_size: 25, search, status: filters.status, sbu_id: sbuId })
   const q = useQuery({ queryKey: ['alc-directory', query], queryFn: () => api.get<Page<AlcDirectoryRow>>(`/portal/alcs?${query}`), placeholderData: prev => prev })
   const showSbuColumn = !fixedSbuId
   return <>

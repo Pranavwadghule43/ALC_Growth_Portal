@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Search, X } from 'lucide-react'
 import { api } from '../lib/api'
 import { toQuery } from '../lib/constants'
+import { useDebouncedSearch } from '../lib/hooks'
 import type { Alc, Dcu, Page, Sbu, User } from '../types'
 import { Badge, Empty, ErrorState, Filter, Loading, PageHeader, Pager } from '../components/ui'
 
@@ -39,7 +40,9 @@ export default function AdminUsers() {
   // After a delete/deactivate the current page can end up past the last page: step back.
   const lastPage = users.data?.pages
   useEffect(() => { if (lastPage !== undefined && page > 1 && page > lastPage) setPage(Math.max(lastPage, 1)) }, [page, lastPage])
-  const alcs = useQuery({ queryKey: ['alcs-options', alcSearch], queryFn: () => api.get<Page<Alc>>(`/admin/alcs?page=1&page_size=100&search=${encodeURIComponent(alcSearch)}`) })
+  // The create-form ALC picker searches the server: debounced like the user search above.
+  const alcTerm = useDebouncedSearch(alcSearch)
+  const alcs = useQuery({ queryKey: ['alcs-options', alcTerm], queryFn: () => api.get<Page<Alc>>(`/admin/alcs?page=1&page_size=100&search=${encodeURIComponent(alcTerm)}`) })
   const sbus = useQuery({ queryKey: ['sbus-options'], queryFn: () => api.get<Page<Sbu>>('/admin/sbus?page=1&page_size=100') })
   const dcus = useQuery({ queryKey: ['dcus-options'], queryFn: () => api.get<{ items: Dcu[] }>('/admin/dcus') })
 

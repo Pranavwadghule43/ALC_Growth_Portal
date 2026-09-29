@@ -2,22 +2,30 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useLocation } from 'react-router-dom'
 import { api } from '../lib/api'
+import { useDebouncedSearch, useDebouncedValue, usePageFor } from '../lib/hooks'
 import type { ActivityListItem, Alc, Page } from '../types'
 import { Badge, Empty, ErrorState, formatDate, Loading, PageHeader, RowActions } from '../components/ui'
 
 type Row = { activity: ActivityListItem; alc: Alc }
+const cleared = (value: string) => value === ''
 export default function AdminActivities() {
   const queue = useLocation().pathname.includes('verification')
-  const [page, setPage] = useState(1)
   const [filters, setFilters] = useState({ search: '', status: '', activity_type: '', ecosystem: '', date_from: '', date_to: '' })
+  // Typed filters (search, activity type, ecosystem) are debounced; status and dates apply at once.
+  const search = useDebouncedSearch(filters.search)
+  const activityType = useDebouncedValue(filters.activity_type, undefined, cleared)
+  const ecosystem = useDebouncedValue(filters.ecosystem, undefined, cleared)
+  const applied = { ...filters, search, activity_type: activityType, ecosystem }
+  // Any applied change (or switching between the queue and all activities) returns to page 1.
+  const [page, setPage] = usePageFor(JSON.stringify([queue, applied]))
   const params = new URLSearchParams({ page: String(page), page_size: '25' })
   if (queue) params.set('queue_only', 'true')
-  Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, value) })
+  Object.entries(applied).forEach(([key, value]) => { if (value) params.set(key, value) })
   const { data, isLoading, error } = useQuery({
-    queryKey: ['admin-activities', queue, page, filters],
+    queryKey: ['admin-activities', queue, page, applied],
     queryFn: () => api.get<Page<Row>>(`/admin/${queue ? 'verification-queue' : 'activities'}?${params}`),
   })
-  function update(key: keyof typeof filters, value: string) { setFilters(current => ({ ...current, [key]: value })); setPage(1) }
+  function update(key: keyof typeof filters, value: string) { setFilters(current => ({ ...current, [key]: value })) }
   return <>
     <PageHeader title={queue ? 'Verification Queue' : 'All Activities'} description={queue ? 'Submitted and resubmitted activities awaiting an administrator decision.' : 'Search and review activities across all ALCs.'} />
     <div className="panel mb-4 grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-6">

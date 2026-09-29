@@ -3,17 +3,21 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
 import { toQuery } from '../lib/constants'
+import { useDebouncedSearch, usePageFor } from '../lib/hooks'
 import type { AlcOption, DirectoryPartner, Page, SbuRow } from '../types'
 import { Badge, Empty, ErrorState, Filter, formatDate, formatNumber, Loading, PageHeader, Pager } from '../components/ui'
 
 // Partners of every ALC in the DCU; server-side filtered and paginated.
 export default function DcuPartners() {
-  const [page, setPage] = useState(1)
   const [filters, setFilters] = useState({ sbu_id: '', alc_id: '', search: '', partner_type: '' })
-  const update = (patch: Partial<typeof filters>) => { setFilters(f => ({ ...f, ...patch })); setPage(1) }
+  const update = (patch: Partial<typeof filters>) => setFilters(f => ({ ...f, ...patch }))
+  // Partner-name search is debounced; selects apply at once. Any change returns to page 1.
+  const search = useDebouncedSearch(filters.search)
+  const applied = { ...filters, search }
+  const [page, setPage] = usePageFor(JSON.stringify(applied))
   const sbus = useQuery({ queryKey: ['dcu-sbus'], queryFn: () => api.get<{ items: SbuRow[] }>('/portal/sbus') })
   const alcs = useQuery({ queryKey: ['alc-options', filters.sbu_id], queryFn: () => api.get<{ items: AlcOption[] }>(`/portal/lookups/alcs${filters.sbu_id ? `?sbu_id=${filters.sbu_id}` : ''}`) })
-  const query = toQuery({ page, page_size: 25, ...filters, search: filters.search.trim() })
+  const query = toQuery({ page, page_size: 25, ...applied })
   const q = useQuery({ queryKey: ['dcu-partners', query], queryFn: () => api.get<Page<DirectoryPartner> & { partner_types: string[] }>(`/portal/partner-directory?${query}`), placeholderData: prev => prev })
   return <><PageHeader title="Partners" description="Partners maintained by the ALCs in your DCU, with their activity history." />
     <div className="panel mb-4 grid gap-3 p-4 md:grid-cols-4">
