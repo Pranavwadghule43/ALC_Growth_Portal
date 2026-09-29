@@ -68,7 +68,10 @@ ACTIVITIES = [
 
 @pytest_asyncio.fixture
 async def world(session, seeded):
-    """DCU X owns SBU 4 (Centres A, C); DCU Y owns SBU 6 (Centre B); Centre D has no SBU."""
+    """DCU X owns SBU 4 (Centres A, C); DCU Y owns SBU 6 (Centre B); Centre D has no SBU.
+
+    Centre D is an incomplete record: the Admin export still lists its activities, but under
+    Phase 4E its ALC login is unavailable (no SBU -> no DCU -> no RCU)."""
     rcu = RCU(code="RCU_T", name="RCU Test")
     session.add(rcu)
     await session.flush()
@@ -257,16 +260,53 @@ async def test_commas_quotes_and_formula_guard_round_trip(client, world):
             assert not value.lstrip().startswith(("=", "+", "-", "@")), (column, value)
 
 
-async def test_alc_without_sbu_exports_blank_sbu_and_own_drafts(client, world):
-    await as_user(client, "00010004", PW)
-    [row] = rows_of((await portal_csv(client)).text)
-    assert (row["Activity Number"], row["SBU"]) == ("ACT-T-007", "")
+async def test_alc_exports_only_its_own_activities_including_drafts(client, world):
+    # Centre C sits in a fully active chain: SBU 4 -> DCU X -> RCU_T.
     await as_user(client, "00010003", "StrongAlcPassC!")
-    rows = rows_of((await portal_csv(client)).text)
-    # The owning ALC still exports its own draft (unchanged behaviour).
+    text = (await portal_csv(client)).text
+    rows = rows_of(text)
+    # The owning ALC still exports its own draft (unchanged behaviour), and only its own rows.
     assert [(r["Activity Number"], r["Status"]) for r in rows] == [
         ("ACT-T-003", "CORRECTION_REQUIRED"), ("ACT-T-004", "DRAFT"),
     ]
+    assert {(r["ALC Code"], r["SBU"]) for r in rows} == {("00010003", "SBU 4")}
+    for other in ("ACT-T-001", "ACT-T-002", "ACT-T-005", "ACT-T-006", "ACT-T-007"):
+        assert other not in text
+
+
+async def test_alc_without_sbu_cannot_export(client, session, world):
+    """Phase 4E: an ALC login needs its whole chain (ALC -> SBU -> DCU -> RCU) active, and a
+    missing link fails closed. An ALC with no SBU therefore never reaches the portal export,
+    so the old "blank SBU column for an ALC's own export" case is intentionally obsolete
+    (the Admin export, which has no SBU column, still includes such records)."""
+    alc_d = world["alc_d"]
+
+    # No SBU: the login itself is refused and no session is created.
+    client.cookies.clear()
+    client.headers.pop("X-CSRF-Token", None)
+    refused = await login(client, "00010004", PW, "PORTAL")
+    assert refused.status_code == 401
+    assert refused.json() == {"detail": "Account unavailable"}
+    assert "refresh_token" not in refused.cookies
+
+    # A session opened while the centre was placed under SBU 4 can export...
+    alc_d.sbu_id = world["sbu4"].id
+    await session.commit()
+    session.expire(alc_d, ["sbu"])
+    await as_user(client, "00010004", PW)
+    [row] = rows_of((await portal_csv(client)).text)
+    assert (row["Activity Number"], row["SBU"]) == ("ACT-T-007", "SBU 4")
+
+    # ...but is refused on the next request once the centre has no SBU: no CSV at all.
+    alc_d.sbu_id = None
+    await session.commit()
+    session.expire(alc_d, ["sbu"])
+    response = await client.get("/api/portal/reports/activities.csv")
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Account unavailable"}
+    assert not response.headers["content-type"].startswith("text/csv")
+    assert "content-disposition" not in response.headers
+    assert "Activity Number" not in response.text and "ACT-T-007" not in response.text
 
 
 async def test_empty_exports_are_header_only(client, world):
