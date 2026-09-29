@@ -16,6 +16,7 @@ from app.auth import (
 from app.config import settings
 from app.database import get_db
 from app.dependencies import (
+    AUTH_USER_LOADERS,
     USER_RESPONSE_LOADERS,
     account_available,
     get_current_user,
@@ -108,7 +109,7 @@ async def login(
     query = (
         select(User)
         .outerjoin(ALC, User.alc_id == ALC.id)
-        .options(*USER_RESPONSE_LOADERS)
+        .options(*AUTH_USER_LOADERS)
         .where(
             or_(
                 and_(
@@ -187,7 +188,7 @@ async def rotate_refresh(
         raise HTTPException(status_code=401, detail="Session expired")
     user = await db.scalar(
         select(User)
-        .options(*USER_RESPONSE_LOADERS)
+        .options(*AUTH_USER_LOADERS)
         .where(User.id == user_id, User.is_active.is_(True))
     )
     if not user or not account_available(user):

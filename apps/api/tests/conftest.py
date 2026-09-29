@@ -13,6 +13,7 @@ from app.database import Base, get_db
 from app.enums import Role
 from app.main import app
 from app.models import ALC, SBU, User
+from app.services.hierarchy import ensure_hierarchy
 
 
 @pytest_asyncio.fixture
@@ -34,6 +35,9 @@ async def seeded(session):
     sbu6 = SBU(code="SBU 6", name="Strategic Business Unit 6")
     session.add_all([sbu4, sbu6])
     await session.flush()
+    # Operational logins need a complete, active chain (ALC -> SBU -> DCU -> RCU), so place
+    # the test SBUs the way the real seed does: SBU 4 and SBU 6 under DCU Nashik, RCU Pune.
+    await ensure_hierarchy(session)
     # sbu4 owns Centre A and Centre C; sbu6 owns Centre B.
     alc_a = ALC(alc_code="00010001", alc_name="Centre A", sbu_id=sbu4.id)
     alc_b = ALC(alc_code="00010002", alc_name="Centre B", sbu_id=sbu6.id)

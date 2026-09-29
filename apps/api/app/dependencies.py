@@ -6,8 +6,8 @@ from sqlalchemy.orm import selectinload
 
 from app.auth import decode_access_token
 from app.database import get_db
-from app.enums import Role
-from app.models import ALC, User
+from app.enums import AlcStatus, Role
+from app.models import ALC, DCU, SBU, User
 from app.services.scope import SUPERVISOR_ROLES, has_scope_key
 
 # Eager-load every relationship the ``UserOut`` response schema serializes, including
@@ -19,6 +19,18 @@ USER_RESPONSE_LOADERS = (
     selectinload(User.alc).selectinload(ALC.sbu),
     selectinload(User.sbu),
     selectinload(User.dcu),
+)
+
+
+# Everything ``account_available`` inspects: the user's whole operational chain
+# (ALC -> SBU -> DCU -> RCU), on top of what the response schema needs. Loaded wherever a
+# session is created or used (login, refresh, every authenticated request), so availability
+# always reflects the current database state, never what was true when the JWT was issued.
+AUTH_USER_LOADERS = (
+    *USER_RESPONSE_LOADERS,
+    selectinload(User.alc).selectinload(ALC.sbu).selectinload(SBU.dcu).selectinload(DCU.rcu),
+    selectinload(User.sbu).selectinload(SBU.dcu).selectinload(DCU.rcu),
+    selectinload(User.dcu).selectinload(DCU.rcu),
 )
 
 
@@ -47,24 +59,44 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired"
         ) from None
-    user = await db.scalar(
-        select(User).options(*USER_RESPONSE_LOADERS).where(User.id == user_id)
-    )
+    user = await db.scalar(select(User).options(*AUTH_USER_LOADERS).where(User.id == user_id))
     if not user or not account_available(user):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account unavailable")
     return user
 
 
+def _dcu_chain_active(dcu: DCU | None) -> bool:
+    """The DCU exists and is active, and so is the RCU above it."""
+    return dcu is not None and dcu.is_active and dcu.rcu is not None and dcu.rcu.is_active
+
+
 def account_available(user: User) -> bool:
-    """Active account whose own ALC / DCU (if any) is active. A DCU login must be linked to
-    exactly one active DCU; an unlinked DCU account can never hold a session."""
+    """May this user hold a session right now? Checked on login, refresh and every request.
+
+    * ADMIN: only its own account must be active (no operational hierarchy).
+    * DCU:   active account + its DCU active + that DCU's RCU active.
+    * SBU:   active account + its SBU active + the SBU's DCU active + that RCU active.
+    * ALC:   active account + its ALC active + the ALC's SBU active + DCU + RCU active.
+
+    Fails closed: a missing link anywhere in the chain (ALC without SBU, SBU without DCU,
+    DCU without RCU, or no linked unit at all) means no operational access. Deactivating a
+    unit only removes portal access; its data stays for Admin and history.
+    """
     if not user.is_active:
         return False
-    if user.alc and user.alc.status.value != "ACTIVE":
+    if user.role == Role.ADMIN:
+        return True
+    if user.role == Role.DCU:
+        return _dcu_chain_active(user.dcu)
+    if user.role == Role.SBU:
+        sbu = user.sbu
+    elif user.role == Role.ALC:
+        if user.alc is None or user.alc.status != AlcStatus.ACTIVE:
+            return False
+        sbu = user.alc.sbu
+    else:
         return False
-    if user.role == Role.DCU and (user.dcu is None or not user.dcu.is_active):
-        return False
-    return True
+    return sbu is not None and sbu.is_active and _dcu_chain_active(sbu.dcu)
 
 
 async def require_admin(user: User = Depends(get_current_user)) -> User:
