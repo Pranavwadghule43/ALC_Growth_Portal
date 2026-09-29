@@ -24,7 +24,8 @@ from sqlalchemy import select
 
 from app.auth import hash_password
 from app.enums import Role
-from app.models import ALC, SBU, ActivityEvidence, User
+from app.models import ALC, DCU, SBU, ActivityEvidence, User
+from app.services.hierarchy import ensure_hierarchy
 from tests.conftest import login
 
 payload = {
@@ -72,8 +73,14 @@ async def alc_submit(client, session, identifier, password, uploader):
 
 @pytest.fixture
 async def empty_sbu_user(session):
-    """An SBU (like the demo 'SBU 1') that owns no ALCs."""
-    sbu1 = SBU(code="SBU 1", name="Strategic Business Unit 1")
+    """An SBU (like the demo 'SBU 1') that owns no ALCs.
+
+    It sits in a valid, active DCU/RCU chain (an SBU without a DCU cannot log in at all),
+    so what this checks is purely "no ALCs => sees nothing".
+    """
+    await ensure_hierarchy(session)
+    pune_south = await session.scalar(select(DCU).where(DCU.code == "DCU_PUNE_SOUTH"))
+    sbu1 = SBU(code="SBU 1", name="Strategic Business Unit 1", dcu_id=pune_south.id)
     session.add(sbu1)
     await session.flush()
     user = User(
