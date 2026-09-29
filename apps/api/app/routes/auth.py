@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import (
     create_access_token,
     hash_password_async,
+    login_password_hash,
     new_csrf_token,
     new_refresh_token,
     token_digest,
@@ -124,11 +125,11 @@ async def login(
         )
     )
     user = await db.scalar(query)
-    if (
-        not user
-        or not user.is_active
-        or not await verify_password_async(payload.password, user.password_hash)
-    ):
+    # Exactly one Argon2 verification on every path (unknown identifier -> dummy hash;
+    # existing account, active or not -> its own hash), so the response time does not reveal
+    # whether the identifier exists. Only then are the account checks applied.
+    password_ok = await verify_password_async(payload.password, login_password_hash(user))
+    if not user or not user.is_active or not password_ok:
         await record_audit(db, "login_failed", "user", request=request)
         await db.commit()
         raise HTTPException(
@@ -161,11 +162,9 @@ async def admin_login(
         )
     )
     user = await db.scalar(query)
-    if (
-        not user
-        or not user.is_active
-        or not await verify_password_async(payload.password, user.password_hash)
-    ):
+    # Same equal-work rule as the operational login (see ``login``).
+    password_ok = await verify_password_async(payload.password, login_password_hash(user))
+    if not user or not user.is_active or not password_ok:
         await record_audit(db, "admin_login_failed", "user", request=request)
         await db.commit()
         raise HTTPException(status_code=401, detail="Invalid username or password")
