@@ -59,6 +59,22 @@ async def verify_password_async(password: str, encoded: str) -> bool:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Login timing: equal Argon2 work whether or not the account exists
+# --------------------------------------------------------------------------- #
+# Hash of a random secret nobody knows, made ONCE per process (at import) with the same
+# ``password_hasher`` as real passwords, so it always carries the current Argon2 parameters.
+# Logins for an unknown identifier verify against it, so they cost one Argon2 verification,
+# exactly like a login for an existing account. It is never valid for any account.
+DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
+
+
+def login_password_hash(user) -> str:
+    """The hash a login attempt must be verified against: the account's own hash, or the
+    dummy hash when no account matched (the attempt still fails; see the login routes)."""
+    return user.password_hash if user is not None else DUMMY_PASSWORD_HASH
+
+
 def create_access_token(user_id: uuid.UUID) -> str:
     now = datetime.now(timezone.utc)
     return jwt.encode(
