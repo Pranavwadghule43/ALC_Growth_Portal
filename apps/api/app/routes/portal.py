@@ -66,7 +66,7 @@ from app.services.activities import (
     submit_activity,
 )
 from app.services.audit import record_audit
-from app.services.csv_export import safe_csv
+from app.services.csv_export import safe_csv, streaming_csv_response
 from app.services.evidence_history import evidence_viewable, is_historical
 from app.services.rollups import (
     PENDING_STATUSES,
@@ -1626,7 +1626,8 @@ async def export_activities(
     db: AsyncSession = Depends(get_db),
 ):
     """ALC-wise activity report. ALC users export their own activities (drafts included);
-    supervisors export submitted-workflow activities only."""
+    supervisors export submitted-workflow activities only. Streamed, column-only: no
+    Activity entities (or their evidence / review / revision collections) are loaded."""
     filters = [activity_scope(user)]
     if alc_id is not None:
         await require_alc_in_scope(db, user, alc_id)
@@ -1644,29 +1645,38 @@ async def export_activities(
         filters.append(Activity.activity_date >= date_from)
     if date_to:
         filters.append(Activity.activity_date <= date_to)
-    rows = (
-        await db.execute(
-            select(Activity, ALC, SBU.code)
-            .join(ALC, Activity.alc_id == ALC.id)
-            .outerjoin(SBU, ALC.sbu_id == SBU.id)
-            .where(*filters)
-            .order_by(desc(Activity.activity_date))
+    query = (
+        select(
+            Activity.activity_number,
+            ALC.alc_code,
+            ALC.alc_name,
+            SBU.code.label("sbu_code"),
+            Activity.activity_date,
+            Activity.activity_type,
+            Activity.ecosystem,
+            Activity.status,
+            Activity.learners_reached,
+            Activity.leads_generated,
+            Activity.admissions_generated,
         )
-    ).all()
-    return csv_response(
+        .join(ALC, Activity.alc_id == ALC.id)
+        .outerjoin(SBU, ALC.sbu_id == SBU.id)
+        .where(*filters)
+        .order_by(desc(Activity.activity_date))
+    )
+    return streaming_csv_response(
+        db,
         [
             "Activity Number", "ALC Code", "ALC Name", "SBU", "Date", "Type", "Ecosystem",
             "Status", "Learners", "Leads", "Admissions",
         ],
-        (
-            [
-                activity.activity_number, alc.alc_code, alc.alc_name, sbu_code or "",
-                activity.activity_date, activity.activity_type, activity.ecosystem,
-                activity.status.value, activity.learners_reached, activity.leads_generated,
-                activity.admissions_generated,
-            ]
-            for activity, alc, sbu_code in rows
-        ),
+        query,
+        lambda r: [
+            r.activity_number, r.alc_code, r.alc_name, r.sbu_code or "",
+            r.activity_date, r.activity_type, r.ecosystem,
+            r.status.value, r.learners_reached, r.leads_generated,
+            r.admissions_generated,
+        ],
         "portal-activities.csv",
     )
 

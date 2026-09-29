@@ -1,7 +1,10 @@
 import logging
+import math
+from typing import Any
 
 import structlog
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -50,6 +53,36 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityHeadersMiddleware)
 
 
+def _json_safe(value: Any) -> Any:
+    """Make one piece of Pydantic error data strictly JSON-serialisable.
+
+    A validator that raises ``ValueError`` / ``AssertionError`` leaves the exception object
+    itself in ``ctx["error"]``; it is replaced by its message (never its repr). Other
+    values (dates, UUIDs, Decimals, bytes, NaN echoed from the input, ...) are encoded, and
+    anything unencodable becomes its ``str()``, so the handler itself can never fail.
+    """
+    if isinstance(value, BaseException):
+        return str(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", errors="replace")
+    try:
+        return _json_safe(jsonable_encoder(value))
+    except Exception:
+        return str(value)
+
+
+def validation_details(exc: RequestValidationError) -> list[dict[str, Any]]:
+    return [_json_safe(error) for error in exc.errors()]
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_error(_: Request, exc: RequestValidationError):
     return JSONResponse(
@@ -58,7 +91,7 @@ async def validation_error(_: Request, exc: RequestValidationError):
             "error": {
                 "code": "VALIDATION_ERROR",
                 "message": "Please check the submitted information",
-                "details": exc.errors(),
+                "details": validation_details(exc),
             }
         },
     )

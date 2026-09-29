@@ -1,12 +1,9 @@
-import csv
-import io
 import math
 import uuid
 from datetime import date, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, case, delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -56,7 +53,7 @@ from app.schemas import (
 from app.services import alc_import
 from app.services.activities import FINAL_STATUSES, admin_activity, review_activity
 from app.services.audit import record_audit
-from app.services.csv_export import safe_csv
+from app.services.csv_export import streaming_csv_response
 from app.services.evidence_history import evidence_viewable
 from app.services.hierarchy_reassignment import (
     alc_hierarchy,
@@ -1278,15 +1275,28 @@ async def report(
     _: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    """Streamed, column-only export: no Activity entities (or their evidence / review /
+    revision collections) are loaded."""
     filters = queue_filters(status, activity_type, ecosystem, alc_id, date_from, date_to, None)
-    rows = (
-        await db.execute(
-            select(Activity, ALC).join(ALC).where(*filters).order_by(desc(Activity.activity_date))
+    query = (
+        select(
+            Activity.activity_number,
+            ALC.alc_code,
+            ALC.alc_name,
+            Activity.activity_date,
+            Activity.activity_type,
+            Activity.ecosystem,
+            Activity.status,
+            Activity.learners_reached,
+            Activity.leads_generated,
+            Activity.admissions_generated,
         )
-    ).all()
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(
+        .join(ALC, Activity.alc_id == ALC.id)
+        .where(*filters)
+        .order_by(desc(Activity.activity_date))
+    )
+    return streaming_csv_response(
+        db,
         [
             "Activity Number",
             "ALC Code",
@@ -1298,30 +1308,21 @@ async def report(
             "Learners",
             "Leads",
             "Admissions",
-        ]
-    )
-    for activity, alc in rows:
-        writer.writerow(
-            [
-                safe_csv(value)
-                for value in [
-                    activity.activity_number,
-                    alc.alc_code,
-                    alc.alc_name,
-                    activity.activity_date,
-                    activity.activity_type,
-                    activity.ecosystem,
-                    activity.status.value,
-                    activity.learners_reached,
-                    activity.leads_generated,
-                    activity.admissions_generated,
-                ]
-            ]
-        )
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=activity-report.csv"},
+        ],
+        query,
+        lambda r: [
+            r.activity_number,
+            r.alc_code,
+            r.alc_name,
+            r.activity_date,
+            r.activity_type,
+            r.ecosystem,
+            r.status.value,
+            r.learners_reached,
+            r.leads_generated,
+            r.admissions_generated,
+        ],
+        "activity-report.csv",
     )
 
 
