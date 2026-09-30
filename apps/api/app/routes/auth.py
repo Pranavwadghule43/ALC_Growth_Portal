@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
-from redis.asyncio import Redis
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +26,7 @@ from app.enums import Role
 from app.models import ALC, RefreshToken, User
 from app.schemas import ChangePasswordIn, LoginIn, UserOut
 from app.services.audit import record_audit
+from app.services.login_limiter import begin_login_attempt
 from app.services.sessions import claim_refresh_token, revoke_user_sessions
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -49,32 +49,6 @@ def set_auth_cookies(response: Response, access: str, refresh: str, csrf: str) -
         path="/",
         max_age=settings.refresh_token_days * 86400,
     )
-
-
-async def check_rate_limit(request: Request, scope: str = "login", limit: int = 10) -> None:
-    # ``scope`` namespaces the counter so admin logins are throttled independently of
-    # portal logins; a stricter ``limit`` can be configured for the admin scope later.
-    key = f"{scope}:{request.client.host if request.client else 'unknown'}"
-    try:
-        redis = Redis.from_url(
-            settings.redis_url,
-            decode_responses=True,
-            socket_connect_timeout=0.5,
-            socket_timeout=0.5,
-        )
-        attempts = await redis.incr(key)
-        if attempts == 1:
-            await redis.expire(key, 60)
-        await redis.aclose()
-        if attempts > limit:
-            raise HTTPException(
-                status_code=429, detail="Too many login attempts. Try again shortly."
-            )
-    except HTTPException:
-        raise
-    except Exception:
-        if settings.app_env == "production":
-            raise HTTPException(status_code=503, detail="Login temporarily unavailable") from None
 
 
 async def _establish_session(
@@ -105,8 +79,9 @@ async def login(
     and must use ``/auth/admin-login``. The role is derived server-side from the identifier:
     a DCU or SBU authenticates with a username/email, an ALC with its unique ALC code. The
     client never sends a trusted role."""
-    await check_rate_limit(request, scope="login")
     identifier = payload.identifier.lower()
+    # Rate limits run before any Argon2 work; a throttled attempt gets 429 and no hashing.
+    attempt = await begin_login_attempt(request, "portal", identifier)
     query = (
         select(User)
         .outerjoin(ALC, User.alc_id == ALC.id)
@@ -137,7 +112,9 @@ async def login(
         )
     # Inactive ALC, or a DCU login not linked to exactly one active DCU: no session.
     if not account_available(user):
+        await attempt.credentials_valid()  # right password: not a credential failure
         raise HTTPException(status_code=401, detail="Account unavailable")
+    await attempt.succeeded()
     return await _establish_session(user, request, response, db)
 
 
@@ -148,8 +125,8 @@ async def admin_login(
     """Administrator login for ADMIN only. SBU and ALC accounts are rejected here and must
     use ``/auth/login``. Throttled under a separate rate-limit scope so stricter admin
     limits can be configured independently."""
-    await check_rate_limit(request, scope="admin_login")
     identifier = payload.identifier.lower()
+    attempt = await begin_login_attempt(request, "admin", identifier)
     query = (
         select(User)
         .options(*USER_RESPONSE_LOADERS)
@@ -168,6 +145,7 @@ async def admin_login(
         await record_audit(db, "admin_login_failed", "user", request=request)
         await db.commit()
         raise HTTPException(status_code=401, detail="Invalid username or password")
+    await attempt.succeeded()
     return await _establish_session(user, request, response, db, action="admin_login")
 
 

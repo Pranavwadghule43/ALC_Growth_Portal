@@ -3,6 +3,7 @@ import os
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-that-is-long-enough-123456")
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -13,7 +14,16 @@ from app.database import Base, get_db
 from app.enums import Role
 from app.main import app
 from app.models import ALC, SBU, User
+from app.services import login_limiter
 from app.services.hierarchy import ensure_hierarchy
+
+
+@pytest.fixture(autouse=True)
+def isolated_login_limiter(monkeypatch):
+    """Every test starts with empty login rate-limit counters and never touches a real
+    Redis (the process-local backend is used; tests that need Redis set it up explicitly)."""
+    monkeypatch.setattr(login_limiter, "_local", login_limiter.LocalBackend(10_000))
+    monkeypatch.setattr(login_limiter, "_redis_down_until", float("inf"))
 
 
 @pytest_asyncio.fixture
