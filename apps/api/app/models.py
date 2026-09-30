@@ -15,6 +15,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     false,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -146,6 +147,15 @@ class Activity(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_activities_alc_status", "alc_id", "status"),
         Index("ix_activities_submitted", "submitted_at"),
+        # Newest-first submitted-workflow lists (Admin / DCU / SBU lists and review queues,
+        # supervisor "recent activity"): ORDER BY submitted_at DESC ... WHERE status <> DRAFT.
+        # Drafts have no submitted_at and sort first in DESC order, so without this partial
+        # index every page walks past every draft first. Created by migration 20260930_0006.
+        Index(
+            "ix_activities_submitted_nondraft",
+            text("submitted_at DESC"),
+            postgresql_where=text("status <> 'DRAFT'"),
+        ),
     )
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     activity_number: Mapped[str] = mapped_column(String(32), unique=True, index=True)
