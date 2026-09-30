@@ -95,8 +95,11 @@ $env:DEV_ADMIN_PASSWORD = "your-unique-12-plus-character-password"
 python -m scripts.create_admin --username admin
 $env:DEV_ALC_PASSWORD = "another-unique-12-plus-character-password"
 python -m scripts.create_alc_users
-python -m uvicorn app.main:app --reload --port 8000
+python -m uvicorn app.main:app --reload --port 8000 --no-proxy-headers
 ```
+
+`--no-proxy-headers` is required in every environment; see
+[Reverse proxy and client IP](#reverse-proxy-and-client-ip).
 
 The development ALC user creator only creates accounts for ALCs lacking one. These accounts require a password change. Do not use shared development credentials in production. For production, use the Admin → Users page to create individual ALC users with unique temporary passwords.
 
@@ -140,6 +143,7 @@ See `.env.example` for all defaults. Important production variables:
 | `SECRET_KEY` | Long random JWT signing secret, not the development default. |
 | `DATABASE_URL` | Managed PostgreSQL URL using `postgresql+asyncpg://`. |
 | `REDIS_URL` | Managed Redis endpoint for login throttling. |
+| `TRUSTED_PROXY_CIDRS` | Reverse-proxy addresses allowed to supply the client IP (e.g. `127.0.0.1/32`). Requires Uvicorn `--no-proxy-headers`. |
 | `CORS_ORIGINS` | Comma-separated exact frontend origins, no wildcard with cookies. |
 | `COOKIE_SECURE=true` | HTTPS-only cookies. Required in production. |
 | `S3_ENDPOINT_URL` | Empty for AWS S3; set for MinIO or another S3-compatible provider. |
@@ -171,6 +175,50 @@ The test suite uses isolated in-memory SQLite for fast security/workflow checks.
 5. Set `APP_ENV=production`, `COOKIE_SECURE=true`, a random `SECRET_KEY`, and production S3 credentials on the API. Configure health checks at `/api/health`. Review backups, retention, monitoring, error reporting, and provider quotas before launch.
 
 Do not point production at the sample CSV, development passwords, local database, or MinIO default credentials.
+
+### Reverse proxy and client IP
+
+Login rate limiting counts attempts per client IP. The application decides which forwarding
+headers (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`) to believe, and it is the **only**
+component allowed to make that decision:
+
+**When application-level `TRUSTED_PROXY_CIDRS` is used, Uvicorn proxy-header processing must
+be disabled with `--no-proxy-headers`.**
+
+Uvicorn enables its own proxy-header processing by default and trusts loopback (`127.0.0.1`,
+and `::1` in newer versions). If it is left on, Uvicorn replaces the connecting peer address
+with a value from `X-Forwarded-For` before the application runs, so the application can no
+longer check that the request really came from a trusted proxy. Do not use `--proxy-headers`,
+`--forwarded-allow-ips`, or the `FORWARDED_ALLOW_IPS` environment variable to implement the
+trust boundary.
+
+Expected production topology (reverse proxy on the same host):
+
+```text
+client -> Nginx / Caddy (public HTTPS) -> Uvicorn on 127.0.0.1:8000 -> FastAPI (TRUSTED_PROXY_CIDRS)
+```
+
+```bash
+# API environment (.env)
+TRUSTED_PROXY_CIDRS=127.0.0.1/32
+```
+
+```bash
+python -m uvicorn app.main:app \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --no-proxy-headers
+```
+
+- The application never trusts localhost or private ranges on its own; trust comes only from
+  `TRUSTED_PROXY_CIDRS`. Leave it empty when no reverse proxy is in front of the API.
+- The proxy must append the real peer to `X-Forwarded-For` (Nginx:
+  `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`; Caddy's `reverse_proxy`
+  does this by default). The application reads the chain from the right, so values a client
+  puts in the header itself are never chosen over the address the proxy saw.
+- On a platform whose proxy is not on loopback, set `TRUSTED_PROXY_CIDRS` to that proxy's
+  address range instead, and still run Uvicorn with `--no-proxy-headers`.
+- Bind Uvicorn to `127.0.0.1` so clients cannot bypass the proxy and connect directly.
 
 ## Current limitations
 

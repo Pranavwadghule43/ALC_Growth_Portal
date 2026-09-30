@@ -4,6 +4,7 @@ from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AuditLog, User
+from app.services.login_limiter import client_ip
 
 
 async def record_audit(
@@ -24,7 +25,9 @@ async def record_audit(
             entity_type=entity_type,
             entity_id=str(entity_id) if entity_id else None,
             audit_metadata=metadata or {},
-            ip_address=request.client.host if request and request.client else None,
+            # Same trusted-proxy rules as login rate limiting (TRUSTED_PROXY_CIDRS); Uvicorn
+            # runs with --no-proxy-headers, so request.client is the direct peer.
+            ip_address=client_ip(request) if request and request.client else None,
             user_agent=request.headers.get("user-agent") if request else None,
         )
     )
