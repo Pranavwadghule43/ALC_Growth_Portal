@@ -52,7 +52,12 @@ from app.schemas import (
 )
 from app.services import alc_import
 from app.services.activities import FINAL_STATUSES, admin_activity, review_activity
-from app.services.activity_lists import activity_list_query, activity_search, lean_activities
+from app.services.activity_lists import (
+    activity_list_query,
+    activity_search,
+    activity_total,
+    lean_activities,
+)
 from app.services.audit import record_audit
 from app.services.csv_export import streaming_csv_response
 from app.services.evidence_history import evidence_viewable
@@ -270,7 +275,7 @@ async def activities(
         status, activity_type, ecosystem, alc_id, date_from, date_to, search
     )
     # Every filter is on ``activities`` columns, so the exact total needs no join.
-    total = await db.scalar(select(func.count(Activity.id)).where(*filters)) or 0
+    total = await activity_total(db, filters)
     rows = (
         await db.execute(
             activity_list_query(

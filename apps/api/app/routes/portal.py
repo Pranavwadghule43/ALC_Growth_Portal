@@ -65,7 +65,12 @@ from app.services.activities import (
     review_activity,
     submit_activity,
 )
-from app.services.activity_lists import activity_list_query, activity_search, lean_activities
+from app.services.activity_lists import (
+    activity_list_query,
+    activity_search,
+    activity_total,
+    lean_activities,
+)
 from app.services.audit import record_audit
 from app.services.csv_export import safe_csv, streaming_csv_response
 from app.services.evidence_history import evidence_viewable, is_historical
@@ -450,7 +455,7 @@ async def list_activities(
                 Activity.activity_type.ilike(f"%{search}%"),
             )
         )
-    total = await db.scalar(select(func.count(Activity.id)).where(*filters)) or 0
+    total = await activity_total(db, filters)
     rows = (
         await db.execute(
             activity_list_query()
@@ -1318,7 +1323,7 @@ async def supervisor_verification_queue(
         # Activity number or ALC code / name; ALC matches are resolved as an id subquery
         # (and still intersected with the caller's scope), so the count needs no join.
         filters.append(activity_search(f"%{search}%", partners=False))
-    total = await db.scalar(select(func.count(Activity.id)).where(*filters)) or 0
+    total = await activity_total(db, filters)
     rows = (
         await db.execute(
             activity_list_query(

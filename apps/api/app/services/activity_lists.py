@@ -151,6 +151,18 @@ async def lean_activities(db: AsyncSession, rows: Sequence[Row]) -> list[Activit
     ]
 
 
+async def activity_total(db: AsyncSession, filters: Sequence[ColumnElement[bool]]) -> int:
+    """Exact number of activities matching ``filters``: a paginated list's ``total``.
+
+    ``COUNT(*)`` over ``activities`` alone. Every list filter is an ``activities`` column or an
+    ``IN`` subquery (hierarchy scope, ALC / partner search), so no join can add or drop rows,
+    and ``id`` is the NOT NULL primary key: the result equals ``COUNT(activities.id)``. Not
+    needing any column value lets PostgreSQL count from an index alone (e.g. an index-only scan
+    of ``ix_activities_alc_status`` for a DCU / SBU scope) instead of visiting every row.
+    """
+    return await db.scalar(select(func.count()).select_from(Activity).where(*filters)) or 0
+
+
 def alc_ids_matching(pattern: str):
     """``IN`` subquery of ALC ids whose code or name matches ``pattern`` (ILIKE). The ALC
     table is small, so resolving ids first lets list and count queries filter
