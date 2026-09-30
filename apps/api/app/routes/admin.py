@@ -71,8 +71,27 @@ from app.storage import storage_service
 router = APIRouter(prefix="/admin", tags=["Admin"], dependencies=[Depends(require_csrf)])
 
 
+# Statuses reported in the dashboard's status distribution: every submitted-workflow status
+# (a DRAFT is private to its ALC), listed alphabetically — the order the former
+# ``GROUP BY status`` query returned them in.
+DASHBOARD_DISTRIBUTION_STATUSES = tuple(
+    sorted((s for s in ActivityStatus if s != ActivityStatus.DRAFT), key=lambda s: s.value)
+)
+
+
 @router.get("/dashboard")
 async def dashboard(_: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """System-wide Admin dashboard.
+
+    Query shape (one pass over ``activities`` for every scalar metric):
+
+    1. ALC totals (``alcs``).
+    2. Activity metrics AND the per-status counts for the status distribution, as conditional
+       aggregates in a single scan of ``activities``.
+    3. Active partners (``partners``).
+    4. Submission trend: the latest 30 activity dates (walks the ``activity_date`` index).
+    5. Top verified activity types (verified rows only, via the ``status`` index).
+    """
     alc_counts = (
         (
             await db.execute(
@@ -151,22 +170,24 @@ async def dashboard(_: User = Depends(require_admin), db: AsyncSession = Depends
                         ),
                         0,
                     ).label("verified_admissions"),
+                    # Status distribution, counted in the same pass (no second scan).
+                    *(
+                        func.count(case((Activity.status == status, 1))).label(status.value)
+                        for status in DASHBOARD_DISTRIBUTION_STATUSES
+                    ),
                 )
             )
         )
         .mappings()
         .one()
     )
+    metrics = dict(metrics)
+    status_counts = {
+        status: metrics.pop(status.value) for status in DASHBOARD_DISTRIBUTION_STATUSES
+    }
     active_partners = (
         await db.scalar(select(func.count(Partner.id)).where(Partner.status == "ACTIVE")) or 0
     )
-    status_rows = (
-        await db.execute(
-            select(Activity.status, func.count(Activity.id))
-            .where(submitted_workflow())
-            .group_by(Activity.status)
-        )
-    ).all()
     trend_rows = (
         await db.execute(
             select(Activity.activity_date, func.count(Activity.id))
@@ -189,7 +210,10 @@ async def dashboard(_: User = Depends(require_admin), db: AsyncSession = Depends
         **alc_counts,
         **metrics,
         "active_partnerships": active_partners,
-        "status_distribution": [{"name": s.value, "value": c} for s, c in status_rows],
+        # Only statuses that occur, as the grouped query produced (no zero entries).
+        "status_distribution": [
+            {"name": s.value, "value": c} for s, c in status_counts.items() if c
+        ],
         "submission_trend": [{"date": str(d), "count": c} for d, c in reversed(trend_rows)],
         "verified_categories": [{"name": n, "value": c} for n, c in categories],
     }
