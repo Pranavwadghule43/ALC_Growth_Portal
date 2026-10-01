@@ -8,15 +8,15 @@ import type { User } from '../types'
 // DCU: operational oversight of its own SBUs and ALCs. No ALC authoring, no user management,
 // no audit logs and no global DCU administration.
 const dcuNav = [
-  ['Dashboard', '/portal', Gauge], ['SBUs', '/portal/sbus', Network], ['ALCs', '/portal/alcs', Building2], ['Activities', '/portal/activities', Activity],
-  ['Verification', '/portal/verification', ClipboardCheck], ['Partners', '/portal/partners', Users], ['Reports', '/portal/reports', FileBarChart], ['Profile', '/portal/profile', Settings]
+  ['Dashboard', '/portal', Gauge], ['SBUs', '/portal/sbus', Network], ['ALCs', '/portal/alcs', Building2], ['Partners', '/portal/partners', Users], ['Activities', '/portal/activities', Activity],
+  ['Verification', '/portal/verification', ClipboardCheck], ['Reports', '/portal/reports', FileBarChart], ['Profile', '/portal/profile', Settings]
 ] as const
 const sbuNav = [
-  ['Dashboard', '/portal', Gauge], ['ALCs', '/portal/alcs', Building2], ['Activities', '/portal/activities', Activity],
-  ['Verification', '/portal/verification', ClipboardCheck], ['Partners', '/portal/partners', Users], ['Reports', '/portal/reports', FileBarChart], ['Profile', '/portal/profile', Settings]
+  ['Dashboard', '/portal', Gauge], ['ALCs', '/portal/alcs', Building2], ['Partners', '/portal/partners', Users], ['Activities', '/portal/activities', Activity],
+  ['Verification', '/portal/verification', ClipboardCheck], ['Reports', '/portal/reports', FileBarChart], ['Profile', '/portal/profile', Settings]
 ] as const
 const alcNav = [
-  ['Dashboard', '/portal', Gauge], ['Add Activity', '/portal/activities/new', PlusCircle], ['My Activities', '/portal/activities', Activity], ['Partners', '/portal/partners', Users],
+  ['Dashboard', '/portal', Gauge], ['Partners', '/portal/partners', Users], ['Add Activity', '/portal/activities/new', PlusCircle], ['My Activities', '/portal/activities', Activity],
   ['Tasks', '/portal/tasks', CalendarCheck], ['30-Day Challenge', '/portal/challenge', ClipboardCheck], ['Performance', '/portal/performance', BarChart3], ['Growth Resources', '/portal/resources', BookOpen], ['Profile', '/portal/profile', Settings]
 ] as const
 
