@@ -98,7 +98,7 @@ describe('active navigation', () => {
 
   it('marks "More" while the active page is one of its items', async () => {
     const view = await mount(user('ADMIN'), '/admin/audit')
-    expect(view.button(/More/).className).toMatch(/(^| )bg-white\/15/)
+    expect(view.button(/More/).className).toMatch(/(^| )bg-brand( |$)/)
     await click(view.button(/More/))
     expect(view.current()).toEqual(['Audit Logs'])
   })

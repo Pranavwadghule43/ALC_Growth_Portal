@@ -13,11 +13,18 @@ export type NavItem = readonly [label: string, to: string, icon: LucideIcon, tie
 const inBar: Record<Exclude<NavTier, 'more'>, string> = { lg: 'hidden lg:inline-flex', xl: 'hidden xl:inline-flex', '2xl': 'hidden 2xl:inline-flex' }
 const inMore: Record<NavTier, string> = { lg: 'lg:hidden', xl: 'xl:hidden', '2xl': '2xl:hidden', more: '' }
 const moreButtonShown: Record<NavTier, string> = { lg: 'lg:hidden', xl: 'xl:hidden', '2xl': '2xl:hidden', more: '' }
-// "More" lights up while the active page is one of the items it currently holds.
+// "More" lights up (same treatment as an active link) while the active page is one of the items
+// it currently holds.
 const moreButtonActive: Record<NavTier, string> = {
-  lg: 'max-lg:bg-white/15 max-lg:text-white', xl: 'max-xl:bg-white/15 max-xl:text-white',
-  '2xl': 'max-2xl:bg-white/15 max-2xl:text-white', more: 'bg-white/15 text-white',
+  lg: 'max-lg:bg-brand max-lg:text-white max-lg:shadow-[inset_0_-2px_0_0_rgb(var(--rcu-light-blue))]',
+  xl: 'max-xl:bg-brand max-xl:text-white max-xl:shadow-[inset_0_-2px_0_0_rgb(var(--rcu-light-blue))]',
+  '2xl': 'max-2xl:bg-brand max-2xl:text-white max-2xl:shadow-[inset_0_-2px_0_0_rgb(var(--rcu-light-blue))]',
+  more: 'bg-brand text-white shadow-[inset_0_-2px_0_0_rgb(var(--rcu-light-blue))]',
 }
+// Header (navy surface) item states. Active = RCU blue pill with a light-blue underline, so it
+// does not rely on hover or colour alone; inactive = slightly muted white.
+const barFocus = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-light'
+const barItem = (active: boolean) => `${barFocus} rounded-md px-3 py-2 text-sm transition ${active ? 'bg-brand font-semibold text-white shadow-[inset_0_-2px_0_0_rgb(var(--rcu-light-blue))]' : 'font-medium text-white/80 hover:bg-brand/50 hover:text-white'}`
 const tierOrder: NavTier[] = ['lg', 'xl', '2xl', 'more']
 
 const LOGO_SRC = `${import.meta.env.BASE_URL}branding/rcu-pune-logo.png`
@@ -45,11 +52,11 @@ function Dropdown({ label, buttonClass, align = 'right', children }: { label: Re
   function onBlur(e: FocusEvent<HTMLDivElement>) { if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node)) close() }
   return <div ref={root} className="relative" onKeyDown={onKeyDown} onBlur={onBlur}>
     <button ref={button} type="button" aria-expanded={open} aria-controls={id} onClick={() => setOpen(o => !o)} className={buttonClass}>{label}</button>
-    {open && <div id={id} className={`absolute top-full z-50 mt-2 w-60 rounded-lg border bg-white py-1.5 text-ink shadow-lg ${align === 'right' ? 'right-0' : 'left-0'}`}>{children(close)}</div>}
+    {open && <div id={id} className={`absolute top-full z-50 mt-2 w-60 rounded-lg border border-line bg-white py-1.5 text-ink shadow-lg shadow-navy/15 ${align === 'right' ? 'right-0' : 'left-0'}`}>{children(close)}</div>}
   </div>
 }
 
-const menuLink = (active: boolean) => `flex items-center gap-3 px-4 py-2 text-sm font-medium focus:outline-none focus-visible:bg-slate-100 ${active ? 'bg-teal/10 text-teal' : 'text-slate-700 hover:bg-slate-50'}`
+const menuLink = (active: boolean) => `flex items-center gap-3 px-4 py-2 text-sm focus:outline-none focus-visible:bg-tint focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-bright ${active ? 'bg-tint font-semibold text-brand shadow-[inset_3px_0_0_0_rgb(var(--rcu-blue))]' : 'font-medium text-ink hover:bg-tint hover:text-brand'}`
 
 export interface TopHeaderProps {
   home: string
@@ -66,27 +73,27 @@ export default function TopHeader({ home, nav, label, account, notice, onLogout 
   const current = activeLink(pathname, nav.map(([, to]) => to), home)
   const activeTier = nav.find(([, to]) => to === current)?.[3]
   const lastTier = tierOrder[Math.max(-1, ...nav.map(([, , , tier]) => tierOrder.indexOf(tier)))]
-  return <header className="sticky top-0 z-40 bg-navy text-white shadow-md" data-testid="top-header">
+  return <header className="sticky top-0 z-40 border-b-2 border-brand bg-navy text-white shadow-md shadow-navy/20" data-testid="top-header">
     <div className="flex h-[72px] items-center gap-3 px-4 lg:gap-5 lg:px-6">
-      <Link to={home} aria-label="RCU Pune — go to dashboard" className="shrink-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-white/70">
+      <Link to={home} aria-label="RCU Pune — go to dashboard" className={`shrink-0 rounded-md ${barFocus}`}>
         <img src={LOGO_SRC} alt="RCU Pune — Regional Coordination unit, MKCL" width={989} height={592} className="h-12 w-auto rounded-md sm:h-14"/>
       </Link>
       <nav aria-label={label} className="flex min-w-0 flex-1 items-center gap-1">
-        {nav.map(([text, to, , tier]) => tier !== 'more' && <Link key={to} to={to} aria-current={to === current ? 'page' : undefined} className={`${inBar[tier]} shrink-0 items-center whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-white/70 ${to === current ? 'bg-white text-navy' : 'text-slate-200 hover:bg-white/10 hover:text-white'}`}>{text}</Link>)}
+        {nav.map(([text, to, , tier]) => tier !== 'more' && <Link key={to} to={to} aria-current={to === current ? 'page' : undefined} className={`${inBar[tier]} shrink-0 items-center whitespace-nowrap ${barItem(to === current)}`}>{text}</Link>)}
         {lastTier && <div className={moreButtonShown[lastTier]}>
-          <Dropdown align="left" buttonClass={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium text-slate-200 transition hover:bg-white/10 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white/70 ${activeTier ? moreButtonActive[activeTier] : ''}`} label={<><Menu className="h-4 w-4 lg:hidden"/><span className="lg:hidden">Menu</span><span className="hidden lg:inline">More</span><ChevronDown className="h-4 w-4"/></>}>
+          <Dropdown align="left" buttonClass={`inline-flex items-center gap-1.5 whitespace-nowrap ${barItem(false)} ${activeTier ? moreButtonActive[activeTier] : ''}`} label={<><Menu className="h-4 w-4 lg:hidden"/><span className="lg:hidden">Menu</span><span className="hidden lg:inline">More</span><ChevronDown className="h-4 w-4"/></>}>
             {close => <ul aria-label={`${label} (more)`}>{nav.map(([text, to, Icon, tier]) => <li key={to} className={inMore[tier]}><Link to={to} onClick={close} aria-current={to === current ? 'page' : undefined} className={menuLink(to === current)}><Icon className="h-4 w-4 shrink-0"/>{text}</Link></li>)}</ul>}
           </Dropdown>
         </div>}
       </nav>
-      <Dropdown buttonClass="flex shrink-0 items-center gap-2.5 rounded-md py-1.5 pl-1.5 pr-2 text-left transition hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/70" label={<>
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-teal font-bold" aria-hidden="true">{account.name[0]?.toUpperCase()}</span>
-        <span className="hidden min-w-0 max-w-[11rem] xl:block"><span className="block truncate text-sm font-semibold">{account.name}</span><span className="block truncate text-xs text-slate-300">{account.detail}</span></span>
+      <Dropdown buttonClass={`flex shrink-0 items-center gap-2.5 rounded-md py-1.5 pl-1.5 pr-2 text-left transition hover:bg-brand/50 ${barFocus}`} label={<>
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand font-bold ring-2 ring-brand-light/40" aria-hidden="true">{account.name[0]?.toUpperCase()}</span>
+        <span className="hidden min-w-0 max-w-[11rem] xl:block"><span className="block truncate text-sm font-semibold">{account.name}</span><span className="block truncate text-xs text-brand-light">{account.detail}</span></span>
         <span className="sr-only xl:hidden">Account: {account.name}</span>
-        <ChevronDown className="h-4 w-4 shrink-0 text-slate-300" aria-hidden="true"/>
+        <ChevronDown className="h-4 w-4 shrink-0 text-brand-light" aria-hidden="true"/>
       </>}>
         {close => <>
-          <div className="border-b px-4 pb-2.5 pt-1.5"><p className="truncate text-sm font-semibold">{account.name}</p><p className="truncate text-xs text-slate-500">{account.detail}</p></div>
+          <div className="border-b border-line px-4 pb-2.5 pt-1.5"><p className="truncate text-sm font-semibold text-navy">{account.name}</p><p className="truncate text-xs text-muted">{account.detail}</p></div>
           <ul className="pt-1">
             {account.profile && <li><Link to={account.profile} onClick={close} aria-current={pathname === account.profile ? 'page' : undefined} className={menuLink(pathname === account.profile)}><Settings className="h-4 w-4 shrink-0"/>Profile</Link></li>}
             <li><button type="button" onClick={() => { close(); onLogout() }} className={`${menuLink(false)} w-full`}><LogOut className="h-4 w-4 shrink-0"/>Sign out</button></li>
