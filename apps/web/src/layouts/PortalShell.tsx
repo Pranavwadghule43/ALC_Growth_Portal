@@ -17,7 +17,7 @@ const sbuNav = [
 ] as const
 const alcNav = [
   ['Dashboard', '/portal', Gauge], ['Partners', '/portal/partners', Users], ['Add Activity', '/portal/activities/new', PlusCircle], ['My Activities', '/portal/activities', Activity],
-  ['Tasks', '/portal/tasks', CalendarCheck], ['30-Day Challenge', '/portal/challenge', ClipboardCheck], ['Performance', '/portal/performance', BarChart3], ['Growth Resources', '/portal/resources', BookOpen], ['Profile', '/portal/profile', Settings]
+  ['Tasks', '/portal/tasks', CalendarCheck], ['Growth Challenge', '/portal/challenge', ClipboardCheck], ['Performance', '/portal/performance', BarChart3], ['Growth Resources', '/portal/resources', BookOpen], ['Profile', '/portal/profile', Settings]
 ] as const
 
 // Sidebar active-state matcher. Kept explicit so sibling routes that share a

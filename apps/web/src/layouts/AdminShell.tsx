@@ -7,7 +7,7 @@ import type { User } from '../types'
 
 const adminNav = [
   ['Dashboard', '/admin', Gauge], ['Partners', '/admin/partners', Users], ['Verification Queue', '/admin/verification', ClipboardCheck], ['Activities', '/admin/activities', Activity], ['ALCs', '/admin/alcs', Building2],
-  ['SBUs', '/admin/sbus', Network], ['30-Day Challenge', '/admin/challenge', CalendarCheck], ['Reports', '/admin/reports', FileBarChart], ['Users', '/admin/users', ShieldCheck], ['Audit Logs', '/admin/audit', BookOpen], ['Settings', '/admin/settings', Settings]
+  ['SBUs', '/admin/sbus', Network], ['Growth Challenge', '/admin/challenge', CalendarCheck], ['Reports', '/admin/reports', FileBarChart], ['Users', '/admin/users', ShieldCheck], ['Audit Logs', '/admin/audit', BookOpen], ['Settings', '/admin/settings', Settings]
 ] as const
 
 // Highlight exactly one item: the most specific link that matches the current page
