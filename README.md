@@ -231,7 +231,12 @@ but still needs a refinement pass. Several conveniences remain for a later harde
 the real master import reading `SBU`, the admin CSV upload UI, XLSX exports, an individual
 notification inbox, inline image thumbnails and evidence preview, full settings mutation,
 more granular performance reports, and broader integration tests against PostgreSQL and
-object storage. The admin challenge overview uses the rolling 30-day period, while
-ALC-specific challenge periods can be configured in the database. Do not label the remaining
-conveniences as complete features in a public rollout. See `REMAINING-WORK.md` for the
-developer-wise breakdown and branch status.
+object storage. The Growth Challenge runs for a configured period of any length (for example
+15, 30, 45, 60 or 90 days). An Admin sets the name, start date, end date and targets on the
+Admin Growth Challenge page; that one global period (`growth_challenges`) applies to every
+ALC, including ALCs added later. An ALC with its own `challenge_progress` row uses that as
+an override. Both the ALC and Admin views measure progress over the period that applies, and
+show "not configured" when there is none (there is no rolling 30-day fallback). Challenge
+dates are evaluated in the Asia/Kolkata time zone, whatever the server's time zone is. Do not
+label the remaining conveniences as complete features in a public rollout. See
+`REMAINING-WORK.md` for the developer-wise breakdown and branch status.

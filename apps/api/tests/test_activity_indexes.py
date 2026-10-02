@@ -51,14 +51,14 @@ def test_model_declares_the_partial_index():
     )
 
 
-def test_migration_is_the_single_head_after_0005():
+def test_migration_follows_0005_in_a_single_chain():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     config = Config()
     config.set_main_option("script_location", str(API_DIR / "alembic"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["20260930_0006"]
+    assert len(script.get_heads()) == 1  # later revisions build on this one; no branches
     assert script.get_revision("20260930_0006").down_revision == "20260924_0005"
 
 
@@ -239,7 +239,7 @@ EXPECTED_DEF = (f"CREATE INDEX {INDEX} ON public.activities USING btree (submitt
 def pg_schema():
     """Fresh schema built by the real migration chain."""
     asyncio.run(_pg("DROP SCHEMA public CASCADE", "CREATE SCHEMA public"))
-    _alembic("upgrade", "head")
+    _alembic("upgrade", "20260930_0006")
     yield
     asyncio.run(_pg("DROP SCHEMA public CASCADE", "CREATE SCHEMA public"))
 
@@ -247,9 +247,9 @@ def pg_schema():
 @pg
 def test_pg_upgrade_downgrade_reupgrade(pg_schema):
     assert pg_version() == "20260930_0006" and pg_index() == (True, EXPECTED_DEF)
-    _alembic("downgrade", "-1")
+    _alembic("downgrade", "20260924_0005")
     assert pg_version() == "20260924_0005" and pg_index() is None
-    _alembic("upgrade", "head")
+    _alembic("upgrade", "20260930_0006")
     assert pg_version() == "20260930_0006" and pg_index() == (True, EXPECTED_DEF)
 
 
@@ -259,7 +259,7 @@ def test_pg_upgrade_rebuilds_an_invalid_leftover_index(pg_schema):
     asyncio.run(_pg(
         f"UPDATE pg_index SET indisvalid = false WHERE indexrelid = '{INDEX}'::regclass"))
     assert pg_index()[0] is False
-    _alembic("upgrade", "head")
+    _alembic("upgrade", "20260930_0006")
     assert pg_index() == (True, EXPECTED_DEF)
 
 

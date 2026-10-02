@@ -187,7 +187,7 @@ describe('Admin Users search keeps its existing 350 ms debounce', () => {
 })
 
 // ---------------------------------------------------------------------------------------------
-describe('30-day challenge: all ALCs reachable', () => {
+describe('Growth Challenge: all ALCs reachable', () => {
   const rows = alcs(784).map(r => ({ ...r, prospects: 1, meetings: 0, pilots: 0, partnerships: 0 }))
   const targets = { prospects: 40, meetings: 20, pilots: 10, partnerships: 5 }
   const setup = () => fakeApi(get, (_path, p) => page(matching(rows, p.get('search')), p, { targets }))

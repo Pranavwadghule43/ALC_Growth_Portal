@@ -27,9 +27,11 @@ from app.models import (
     ActivityEvidence,
     ActivityReview,
     ActivityRevision,
+    GrowthChallenge,
     Partner,
     User,
 )
+from app.services import growth_challenge
 from app.services.rollups import PENDING_STATUSES, alc_activity_join
 from tests.test_activity_exports import ActivityLoads, StatementLog, as_user
 
@@ -600,7 +602,15 @@ async def test_directories_aggregate_only_the_page(client, session, world):
     assert placeholders.count("?") == 7
 
 
-async def test_challenge_directory_matches_legacy_and_values(client, session, world):
+async def test_challenge_directory_matches_legacy_and_values(
+    client, session, world, monkeypatch
+):
+    # The overview now measures the configured Growth Challenge period (there is no rolling
+    # fallback), so configure the 30 days ending today that the legacy query used.
+    session.add(GrowthChallenge(name="Thirty days", start_date=TODAY - timedelta(days=29),
+                                end_date=TODAY))
+    await session.commit()
+    monkeypatch.setattr(growth_challenge, "current_date", lambda: TODAY)
     await as_user(client, *ADMIN)
     for params, filters in (({}, []), ({"search": "centre"}, [or_(
             ALC.alc_code.ilike("%centre%"), ALC.alc_name.ilike("%centre%"))])):

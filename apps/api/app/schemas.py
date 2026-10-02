@@ -348,3 +348,53 @@ class DcuOut(ORMModel):
 
 class PasswordResetIn(BaseModel):
     password: str = Field(min_length=12, max_length=256)
+
+
+# --------------------------------------------------------------------------- #
+# Growth Challenge (global configuration)
+# --------------------------------------------------------------------------- #
+class GrowthChallengeIn(BaseModel):
+    """A global Growth Challenge period: both dates inclusive, any duration."""
+
+    name: str = Field(min_length=2, max_length=150)
+    start_date: date
+    end_date: date
+    prospects_target: int = Field(default=40, ge=0, le=1_000_000)
+    meetings_target: int = Field(default=20, ge=0, le=1_000_000)
+    pilots_target: int = Field(default=10, ge=0, le=1_000_000)
+    partnerships_target: int = Field(default=5, ge=0, le=1_000_000)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def trim_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def end_not_before_start(self):
+        if self.end_date < self.start_date:
+            raise ValueError("End date must be on or after the start date")
+        return self
+
+
+class GrowthChallengePatch(BaseModel):
+    """Partial update; the merged period is validated against the stored challenge."""
+
+    name: str | None = Field(default=None, min_length=2, max_length=150)
+    start_date: date | None = None
+    end_date: date | None = None
+    prospects_target: int | None = Field(default=None, ge=0, le=1_000_000)
+    meetings_target: int | None = Field(default=None, ge=0, le=1_000_000)
+    pilots_target: int | None = Field(default=None, ge=0, le=1_000_000)
+    partnerships_target: int | None = Field(default=None, ge=0, le=1_000_000)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def trim_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def no_explicit_nulls(self):
+        cleared = sorted(f for f in self.model_fields_set if getattr(self, f) is None)
+        if cleared:
+            raise ValueError(f"{', '.join(cleared)} cannot be empty")
+        return self

@@ -1,10 +1,24 @@
 import math
 import uuid
-from datetime import date, timedelta
+from datetime import date
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
-from sqlalchemy import and_, case, delete, desc, func, or_, select, update
+from sqlalchemy import (
+    Date,
+    and_,
+    case,
+    delete,
+    desc,
+    false,
+    func,
+    literal,
+    null,
+    or_,
+    select,
+    update,
+)
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -29,6 +43,8 @@ from app.models import (
     ActivityReview,
     ActivityRevision,
     AuditLog,
+    ChallengeProgress,
+    GrowthChallenge,
     Notification,
     Partner,
     RefreshToken,
@@ -40,6 +56,8 @@ from app.schemas import (
     AlcStatusPatch,
     DcuOut,
     DecisionChangeIn,
+    GrowthChallengeIn,
+    GrowthChallengePatch,
     ReviewDecisionIn,
     SbuIn,
     SbuOut,
@@ -50,7 +68,7 @@ from app.schemas import (
     UserPage,
     UserPatch,
 )
-from app.services import alc_import
+from app.services import alc_import, growth_challenge
 from app.services.activities import FINAL_STATUSES, admin_activity, review_activity
 from app.services.activity_lists import (
     activity_list_query,
@@ -749,8 +767,7 @@ async def challenge_progress(
     db: AsyncSession = Depends(get_db),
 ):
     page, page_size = page_data
-    today = date.today()
-    start = today - timedelta(days=29)
+    today = growth_challenge.current_date()
     filters = (
         [or_(ALC.alc_code.ilike(f"%{search}%"), ALC.alc_name.ilike(f"%{search}%"))]
         if search
@@ -759,6 +776,48 @@ async def challenge_progress(
     total = await db.scalar(select(func.count(ALC.id)).where(*filters)) or 0
     # Choose the page of ALCs first, then aggregate activities for those ALCs only.
     page_ids = await paged_alc_ids(db, filters, page, page_size)
+    # Every ALC is measured over the global Growth Challenge period (any duration) unless it
+    # has its own override; ``periods`` lists only the ALCs that use an override. With no
+    # challenge configured nothing is counted (no rolling fallback).
+    challenges = await growth_challenge.all_challenges(db)
+    default = growth_challenge.resolve([], challenges, today)
+    overrides = growth_challenge.group_rows_by_alc(
+        (
+            await db.scalars(
+                select(ChallengeProgress).where(ChallengeProgress.alc_id.in_(page_ids))
+            )
+        ).all()
+        if page_ids
+        else []
+    )
+    periods: dict[str, dict] = {}
+    windows: dict[tuple[date, date], list[uuid.UUID]] = {}
+    for alc_id, alc_rows in overrides.items():
+        resolution = growth_challenge.resolve(alc_rows, challenges, today)
+        if resolution.source != growth_challenge.SOURCE_ALC or resolution.period is None:
+            continue
+        periods[str(alc_id)] = resolution.as_dict(today)
+        window = (resolution.period.start, resolution.period.counting_end(today))
+        windows.setdefault(window, []).append(alc_id)
+    default_window = (
+        (default.period.start, default.period.counting_end(today)) if default.period else None
+    )
+    if windows:
+        starts = [(Activity.alc_id.in_(ids), literal(lo, Date)) for (lo, _), ids in windows.items()]
+        ends = [(Activity.alc_id.in_(ids), literal(hi, Date)) for (_, hi), ids in windows.items()]
+        in_window = and_(
+            Activity.activity_date
+            >= case(*starts, else_=literal(default_window[0], Date) if default_window else null()),
+            Activity.activity_date
+            <= case(*ends, else_=literal(default_window[1], Date) if default_window else null()),
+        )
+    elif default_window:
+        in_window = and_(
+            Activity.activity_date >= default_window[0],
+            Activity.activity_date <= default_window[1],
+        )
+    else:
+        in_window = false()
     rows = (
         (
             await db.execute(
@@ -799,8 +858,7 @@ async def challenge_progress(
                     and_(
                         ALC.id == Activity.alc_id,
                         Activity.status == ActivityStatus.VERIFIED,
-                        Activity.activity_date >= start,
-                        Activity.activity_date <= today,
+                        in_window,
                     ),
                 )
                 .where(ALC.id.in_(page_ids))
@@ -819,8 +877,117 @@ async def challenge_progress(
         "page_size": page_size,
         "total": total,
         "pages": math.ceil(total / page_size) if total else 0,
-        "targets": {"prospects": 40, "meetings": 20, "pilots": 10, "partnerships": 5},
+        # Column set for the table; the default targets only name the columns when no
+        # challenge is configured (``default_period.configured`` is then false).
+        "targets": default.targets or dict(growth_challenge.DEFAULT_TARGETS),
+        "default_period": default.as_dict(today),
+        "periods": periods,
+        "challenges": [growth_challenge.challenge_out(c, today) for c in challenges],
+        "today": today,
+        "timezone": growth_challenge.APP_TIMEZONE_NAME,
     }
+
+
+async def _challenge_conflict(
+    db: AsyncSession, start: date, end: date, exclude_id: uuid.UUID | None = None
+) -> None:
+    """422 for an invalid period, 409 when it shares a day with another challenge."""
+    problem = growth_challenge.validate_period(start, end)
+    if problem:
+        raise HTTPException(status_code=422, detail=problem)
+    other = await growth_challenge.overlapping_challenge(db, start, end, exclude_id)
+    if other:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f'Overlaps Growth Challenge "{other.name}" '
+                f"({other.start_date} to {other.end_date}). Challenge periods cannot overlap."
+            ),
+        )
+
+
+def _challenge_snapshot(challenge: GrowthChallenge) -> dict:
+    return {
+        "name": challenge.name,
+        "start_date": str(challenge.start_date),
+        "end_date": str(challenge.end_date),
+        "targets": growth_challenge.targets_of(challenge),
+    }
+
+
+async def _save_challenge(db: AsyncSession) -> None:
+    """Write the pending challenge and its audit entry together."""
+    try:
+        await db.commit()
+    except IntegrityError:
+        # PostgreSQL exclusion constraint: a concurrent request configured an overlapping
+        # period after this request's own overlap check. Nothing is saved or audited.
+        await db.rollback()
+        raise HTTPException(
+            status_code=409, detail="Challenge periods cannot overlap."
+        ) from None
+
+
+@router.post("/growth-challenges", status_code=201)
+async def create_growth_challenge(
+    payload: GrowthChallengeIn,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Configure a global Growth Challenge period (applies to every ALC)."""
+    await _challenge_conflict(db, payload.start_date, payload.end_date)
+    challenge = GrowthChallenge(
+        id=uuid.uuid4(),
+        name=payload.name,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        prospects_target=payload.prospects_target,
+        meetings_target=payload.meetings_target,
+        pilots_target=payload.pilots_target,
+        partnerships_target=payload.partnerships_target,
+        created_by=admin.id,
+        updated_by=admin.id,
+    )
+    db.add(challenge)
+    await record_audit(
+        db, "growth_challenge_created", "growth_challenge", challenge.id, admin, request,
+        _challenge_snapshot(challenge),
+    )
+    await _save_challenge(db)
+    await db.refresh(challenge)
+    return growth_challenge.challenge_out(challenge, growth_challenge.current_date())
+
+
+@router.patch("/growth-challenges/{challenge_id}")
+async def update_growth_challenge(
+    challenge_id: uuid.UUID,
+    payload: GrowthChallengePatch,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change a configured Growth Challenge (name, dates or targets)."""
+    challenge = await db.get(GrowthChallenge, challenge_id)
+    if not challenge:
+        raise HTTPException(status_code=404, detail="Growth Challenge not found")
+    changes = payload.model_dump(exclude_unset=True)
+    before = _challenge_snapshot(challenge)
+    start = changes.get("start_date", challenge.start_date)
+    end = changes.get("end_date", challenge.end_date)
+    await _challenge_conflict(db, start, end, exclude_id=challenge.id)
+    for key, value in changes.items():
+        setattr(challenge, key, value)
+    after = _challenge_snapshot(challenge)
+    if after != before:
+        challenge.updated_by = admin.id
+        await record_audit(
+            db, "growth_challenge_updated", "growth_challenge", challenge.id, admin, request,
+            {"before": before, "after": after},
+        )
+        await _save_challenge(db)
+        await db.refresh(challenge)
+    return growth_challenge.challenge_out(challenge, growth_challenge.current_date())
 
 
 def _like_pattern(term: str) -> str:

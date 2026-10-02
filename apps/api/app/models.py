@@ -5,6 +5,7 @@ from typing import Any
 from sqlalchemy import JSON as SAJSON
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Enum,
@@ -285,6 +286,40 @@ class ChallengeProgress(Base, TimestampMixin):
     meetings_target: Mapped[int] = mapped_column(Integer, default=20)
     pilots_target: Mapped[int] = mapped_column(Integer, default=10)
     partnerships_target: Mapped[int] = mapped_column(Integer, default=5)
+
+
+class GrowthChallenge(Base, TimestampMixin):
+    """One global Growth Challenge period (any duration) with its targets.
+
+    Applies to every ALC, including ALCs created later, with no per-ALC rows. Both dates are
+    inclusive. Periods may not overlap: enforced by the API and, on PostgreSQL, by the
+    ``ex_growth_challenges_no_overlap`` exclusion constraint (migration 20261002_0007).
+    """
+
+    __tablename__ = "growth_challenges"
+    __table_args__ = (
+        CheckConstraint("end_date >= start_date", name="period_order"),
+        CheckConstraint(
+            "prospects_target >= 0 AND meetings_target >= 0 "
+            "AND pilots_target >= 0 AND partnerships_target >= 0",
+            name="targets_non_negative",
+        ),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(150))
+    start_date: Mapped[date] = mapped_column(Date, index=True)
+    end_date: Mapped[date] = mapped_column(Date, index=True)
+    prospects_target: Mapped[int] = mapped_column(Integer, default=40)
+    meetings_target: Mapped[int] = mapped_column(Integer, default=20)
+    pilots_target: Mapped[int] = mapped_column(Integer, default=10)
+    partnerships_target: Mapped[int] = mapped_column(Integer, default=5)
+    # Nullable + SET NULL so deleting an admin login never removes a challenge.
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
 
 
 class AuditLog(Base):

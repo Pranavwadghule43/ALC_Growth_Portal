@@ -14,7 +14,7 @@ import io
 import math
 import uuid
 from collections.abc import Sequence
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
@@ -58,6 +58,7 @@ from app.schemas import (
     TaskIn,
     TaskOut,
 )
+from app.services import growth_challenge
 from app.services.activities import (
     EDITABLE_STATUSES,
     FINAL_STATUSES,
@@ -192,29 +193,27 @@ async def scoped_alc(db: AsyncSession, user: User, alc_id: uuid.UUID) -> ALC:
 # Dashboards (role-aware)
 # --------------------------------------------------------------------------- #
 async def challenge_data(user: User, db: AsyncSession) -> dict:
-    today = date.today()
-    start = today - timedelta(days=29)
-    config = await db.scalar(
-        select(ChallengeProgress).where(
-            ChallengeProgress.alc_id == user.alc_id,
-            ChallengeProgress.challenge_period_start <= today,
-            ChallengeProgress.challenge_period_end >= today,
+    """Growth Challenge progress for the signed-in ALC over the configured period (any
+    duration): its own override if it has one, otherwise the global challenge. With nothing
+    configured the challenge is reported as NOT_CONFIGURED; there is no rolling fallback."""
+    today = growth_challenge.current_date()
+    overrides = (
+        await db.scalars(
+            select(ChallengeProgress).where(ChallengeProgress.alc_id == user.alc_id)
         )
+    ).all()
+    resolution = growth_challenge.resolve(
+        overrides, await growth_challenge.all_challenges(db), today
     )
-    targets = {"prospects": 40, "meetings": 20, "pilots": 10, "partnerships": 5}
-    if config:
-        start = config.challenge_period_start
-        targets = {
-            "prospects": config.prospects_target,
-            "meetings": config.meetings_target,
-            "pilots": config.pilots_target,
-            "partnerships": config.partnerships_target,
-        }
+    source = "verified activities; partnerships require a linked partner"
+    period = resolution.period
+    if period is None:
+        return {**resolution.as_dict(today), "achieved": {}, "source": source}
     verified = [
         Activity.alc_id == user.alc_id,
         Activity.status == ActivityStatus.VERIFIED,
-        Activity.activity_date >= start,
-        Activity.activity_date <= today,
+        Activity.activity_date >= period.start,
+        Activity.activity_date <= period.counting_end(today),
     ]
     rows = (
         (
@@ -244,11 +243,9 @@ async def challenge_data(user: User, db: AsyncSession) -> dict:
         or 0
     )
     return {
-        "period_start": start,
-        "period_end": config.challenge_period_end if config else today,
-        "targets": targets,
+        **resolution.as_dict(today),
         "achieved": {**rows, "partnerships": partnerships},
-        "source": "verified activities; partnerships require a linked partner",
+        "source": source,
     }
 
 

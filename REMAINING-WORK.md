@@ -42,7 +42,7 @@ implemented and tested but not yet merged into `main`.
 - [x] ALC correction + resubmission with retained decision/submission snapshots
 - [x] Partner management (create / edit)
 - [x] Tasks / follow-ups
-- [x] 30-Day Challenge base implementation
+- [x] Growth Challenge base implementation (variable duration, global period configured by Admin)
 - [x] Notifications backend (`Notification` model + read/mark-read endpoints)
 - [x] Audit logging (`AuditLog` model + audit service)
 - [x] Basic CSV activity reports
@@ -159,7 +159,7 @@ Mobile, Email, Area Type, RCU, or DCU.
 - [ ] Allow ALC to export its own activity history
 - [ ] Improve Admin performance analytics
 
-### 30-Day Challenge calculation fixes
+### Growth Challenge calculation fixes
 - [ ] Review partnership-count logic
 - [ ] Fix mismatch between current activity types and partnership calculation
 - [ ] Confirm rules for prospects / meetings / pilots / partnerships
