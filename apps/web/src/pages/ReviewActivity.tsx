@@ -25,7 +25,7 @@ export default function ReviewActivity() {
         <EvidenceGallery evidence={a.evidence} removed={a.removed_evidence} accessPath={e => `/admin/evidence/${e}/access`} />
         <ReviewHistory reviews={a.reviews} revisions={a.revisions ?? []} />
       </div>
-      <aside className="space-y-5 xl:sticky xl:top-6 xl:self-start">
+      <aside className="space-y-5 xl:sticky xl:top-24 xl:self-start">
         <section className="panel p-5"><h2 className="font-bold text-navy">ALC</h2><p className="mt-3 text-sm font-semibold">{alc.alc_name}</p><p className="text-sm text-slate-500">{alc.alc_code}</p><p className="mt-2 text-xs text-slate-500">SBU: <span className="font-medium text-navy">{sbu ? `${sbu.code} · ${sbu.name}` : 'Unassigned'}</span></p><p className="mt-1 text-xs text-slate-500">DCU: <span className="font-medium text-navy">{dcu?.name ?? 'Unassigned'}</span></p></section>
         <DecisionPanel basePath={`/admin/activities/${a.id}`} status={a.status} canReview={REVIEWABLE_STATUSES.includes(a.status)} canChangeDecision={query.data.can_change_decision} onDone={done} />
       </aside>
