@@ -1,0 +1,666 @@
+diff --git a/apps/api/app/routes/leaderboard.py b/apps/api/app/routes/leaderboard.py
+index b6e123c..8e374fd 100644
+--- a/apps/api/app/routes/leaderboard.py
++++ b/apps/api/app/routes/leaderboard.py
+@@ -1,4 +1,5 @@
+-"""Regional leaderboards readable by every operational role (ADMIN, DCU, SBU, ALC).
++"""Regional leaderboards readable by every operational role (ADMIN, DCU, SBU, ALC):
++the Region Top 10 and the complete regional score directory.
+ 
+ These endpoints are intentionally *not* scoped to the caller's hierarchy: every role sees the
+ same regional result. They grant no other access — ``/admin`` and ``/portal`` keep their own
+@@ -24,3 +25,12 @@ async def region_top10(
+ ):
+     """Top 10 ACTIVE ALCs under an active SBU / DCU / RCU, by lifetime verified performance."""
+     return await leaderboard.region_top10(db)
++
++
++@router.get("/region-scores")
++async def region_scores(
++    _: User = Depends(require_operational_user), db: AsyncSession = Depends(get_db)
++):
++    """Every eligible ALC with its regional rank and score, from the same ranking as the Top
++    10. Not filtered or re-scored by the caller's scope; the UI filters rows only."""
++    return await leaderboard.region_scores(db)
+diff --git a/apps/api/app/services/leaderboard.py b/apps/api/app/services/leaderboard.py
+index 8a70c61..5d8619b 100644
+--- a/apps/api/app/services/leaderboard.py
++++ b/apps/api/app/services/leaderboard.py
+@@ -1,8 +1,14 @@
+-"""Region Top 10: one regional ALC leaderboard shared by every operational role.
++"""Region Top 10 and the regional score directory, shared by every operational role.
++
++Both are views of ONE regional ranking (``regional_ranking``): the directory lists every
++eligible ALC with its regional rank and score, and the Top 10 is exactly its first 10 rows.
++Eligibility, metrics, percentiles, weights, scores and ranks therefore have a single source.
+ 
+ Intentionally regional: ADMIN, DCU, SBU and ALC users all see the same ranking, so nothing
+-here uses ``app.services.scope``. It exposes only ALC identity (code, name, SBU, DCU), four
+-lifetime aggregates and a score — never activity, partner, contact or user details.
++here uses ``app.services.scope``. Any DCU / SBU filtering of the directory happens after
++scoring (in the UI) and never re-normalises a subset. It exposes only ALC identity (code,
++name, SBU, DCU), four lifetime aggregates and a score — never activity, partner, contact or
++user details.
+ 
+ Metrics (lifetime, each activity's *current* status):
+ 
+@@ -153,8 +159,9 @@ def score_rows(rows: list[LeaderboardRow]) -> list[LeaderboardRow]:
+     return rows
+ 
+ 
+-def rank_rows(rows: list[LeaderboardRow], limit: int = TOP_N) -> list[LeaderboardRow]:
+-    """Exact score descending, then ALC code ascending; the first ``limit`` rows."""
++def rank_rows(rows: list[LeaderboardRow], limit: int | None = TOP_N) -> list[LeaderboardRow]:
++    """Exact score descending, then ALC code ascending; the first ``limit`` rows (all when
++    ``limit`` is None)."""
+     return sorted(rows, key=lambda r: (-r.score, r.alc_code))[:limit]
+ 
+ 
+@@ -173,8 +180,14 @@ async def eligible_rows(db: AsyncSession) -> list[LeaderboardRow]:
+     ]
+ 
+ 
+-async def region_top10(db: AsyncSession) -> dict:
+-    ranked = rank_rows(score_rows(await eligible_rows(db)))
++async def regional_ranking(db: AsyncSession) -> list[LeaderboardRow]:
++    """Every eligible ALC, scored against the whole eligible region and in regional rank
++    order. The single source for both the Top 10 and the score directory."""
++    return rank_rows(score_rows(await eligible_rows(db)), limit=None)
++
++
++def leaderboard_payload(ranked: list[LeaderboardRow]) -> dict:
++    """Response body: ``rank`` is the row's position in the complete regional ranking."""
+     return {
+         "period": PERIOD,
+         "generated_at": datetime.now(timezone.utc),
+@@ -195,3 +208,13 @@ async def region_top10(db: AsyncSession) -> dict:
+             for position, row in enumerate(ranked, 1)
+         ],
+     }
++
++
++async def region_top10(db: AsyncSession) -> dict:
++    """The first 10 rows of the regional ranking."""
++    return leaderboard_payload((await regional_ranking(db))[:TOP_N])
++
++
++async def region_scores(db: AsyncSession) -> dict:
++    """Every eligible ALC with its regional rank and score (same values as the Top 10)."""
++    return leaderboard_payload(await regional_ranking(db))
+diff --git a/apps/api/tests/test_region_leaderboard.py b/apps/api/tests/test_region_leaderboard.py
+index fdfb5eb..53e603f 100644
+--- a/apps/api/tests/test_region_leaderboard.py
++++ b/apps/api/tests/test_region_leaderboard.py
+@@ -487,3 +487,123 @@ def test_query_preaggregates_before_joining():
+     sql = str(leaderboard.regional_metrics_query())
+     assert sql.count("GROUP BY") == 2  # one per pre-aggregated subquery, none outside
+     assert "verified_activity" in sql and "active_partners" in sql
++
++
++# --------------------------------------------------------------------------- #
++# Regional score directory (GET /api/leaderboard/region-scores)
++# --------------------------------------------------------------------------- #
++SCORES_URL = "/api/leaderboard/region-scores"
++
++
++async def fetch_scores(client):
++    response = await client.get(SCORES_URL)
++    assert response.status_code == 200, response.text
++    return response.json()
++
++
++async def test_region_scores_unauthenticated_is_401(client, world):
++    assert (await client.get(SCORES_URL)).status_code == 401
++
++
++async def test_region_scores_same_for_every_role(client, session, world):
++    await _region(session, world["sbu4"].id, 12)
++    results = []
++    for identifier, password, portal in ROLES:
++        await as_user(client, identifier, password, portal)
++        payload = await fetch_scores(client)
++        assert payload["period"] == "LIFETIME" and payload["generated_at"]
++        results.append(payload["items"])
++    assert all(items == results[0] for items in results)
++
++
++async def test_region_scores_must_change_password_is_denied(client, session, world):
++    user = await session.scalar(select(User).where(User.username == "sbu-4"))
++    user.must_change_password = True
++    await session.commit()
++    client.cookies.clear()
++    assert (await login(client, "sbu-4", "StrongSbuPass4!", "PORTAL")).status_code == 200
++    response = await client.get(SCORES_URL)
++    assert response.status_code == 403 and "Password change required" in response.text
++
++
++async def test_region_scores_lists_every_eligible_alc_in_regional_order(client, session, world):
++    await _region(session, world["sbu4"].id, 12)
++    await as_user(client, "admin", "StrongAdminPass!", "ADMIN")
++    items = (await fetch_scores(client))["items"]
++    assert [i["rank"] for i in items] == list(range(1, 13))
++    assert [i["alc_code"] for i in items] == [f"0007{i:04d}" for i in range(12, 0, -1)]
++    assert set(items[0]) == ITEM_KEYS
++
++
++async def test_top10_is_exactly_the_first_ten_region_scores(client, session, world):
++    await _region(session, world["sbu4"].id, 12)
++    session.add(partner(world["alc_b"].id))  # a different SBU, ranked in the same population
++    await session.commit()
++    await as_user(client, "00010001", "StrongAlcPassA!")
++    top = (await fetch(client))["items"]
++    scores = (await fetch_scores(client))["items"]
++    assert len(scores) == 13 and len(top) == 10
++    assert top == scores[:10]  # same ranks, scores and metrics
++
++
++async def test_region_scores_keep_eligibility_exclusions(session, world):
++    await add_scored_alc(session, "00030001", world["sbu4"].id, leads=10, done=1)
++    await add_alc(session, "00030002", world["sbu4"].id)  # all four metrics zero
++    await add_scored_alc(session, "00030003", world["sbu4"].id, leads=5, done=1)
++    session.add(activity((await add_alc(session, "00030004", world["sbu4"].id,
++                                         status=AlcStatus.INACTIVE)).id, leads=99))
++    await _branch(session, "0011", sbu_active=False)
++    await _branch(session, "0012", dcu_active=False)
++    await _branch(session, "0013", rcu_active=False)
++    await session.commit()
++    items = (await leaderboard.region_scores(session))["items"]
++    assert [i["alc_code"] for i in items] == ["00030001", "00030003"]
++
++
++async def test_filtering_by_dcu_never_rescores_or_reranks(session, world):
++    # ALC A sits in DCU Nashik, ALC B in another active DCU of another active RCU branch.
++    a = await add_scored_alc(session, "00020001", world["sbu4"].id, leads=10, admissions=1,
++                             done=1, partners=1)
++    await _branch(session, "0021")  # leads 50, admissions 5, done 2, partners 3
++    await add_scored_alc(session, "00020003", world["sbu4"].id, leads=30, done=3)
++    await session.commit()
++    full = (await leaderboard.region_scores(session))["items"]
++    regional = {i["alc_code"]: (i["rank"], i["score"]) for i in full}
++    # What a DCU Nashik filter shows: the same rows, with their regional rank and score.
++    nashik = [i for i in full if i["dcu"]["code"] == "DCU_NASHIK"]
++    assert {i["alc_code"] for i in nashik} == {"00020001", "00020003"}
++    for item in nashik:
++        assert (item["rank"], item["score"]) == regional[item["alc_code"]]
++    assert regional["00020001"][0] == 3  # not renumbered to a DCU-local rank
++    # Re-normalising only the DCU subset would give a different score, which never happens.
++    subset = [r for r in await leaderboard.eligible_rows(session) if r.dcu_code == "DCU_NASHIK"]
++    subset_score = {r.alc_code: display_score(r.score) for r in score_rows(subset)}
++    assert subset_score[a.alc_code] != regional[a.alc_code][1]
++
++
++async def test_one_scoring_source_for_both_endpoints(session, world, monkeypatch):
++    await _region(session, world["sbu4"].id, 12)
++    calls = []
++    original = leaderboard.score_rows
++
++    def spy(rows):
++        calls.append(len(rows))
++        return original(rows)
++
++    monkeypatch.setattr(leaderboard, "score_rows", spy)
++    top = await leaderboard.region_top10(session)
++    scores = await leaderboard.region_scores(session)
++    assert calls == [12, 12]  # both score the full eligible population, the same way
++    assert top["items"] == scores["items"][:10]
++
++
++async def test_region_scores_single_statement_regardless_of_volume(session, world):
++    await _grow(session, world["sbu4"].id, "0006", alcs=3, activities=2, partners=1)
++    with StatementLog(session) as small, ActivityLoads() as loads:
++        await leaderboard.region_scores(session)
++    await _grow(session, world["sbu4"].id, "0005", alcs=25, activities=6, partners=4)
++    with StatementLog(session) as large:
++        payload = await leaderboard.region_scores(session)
++    assert len(small.statements) == len(large.statements) == 1
++    assert loads.count == 0
++    assert len(payload["items"]) == 28
+diff --git a/apps/web/src/components/leaderboard.test.tsx b/apps/web/src/components/leaderboard.test.tsx
+index 2f62040..46cba73 100644
+--- a/apps/web/src/components/leaderboard.test.tsx
++++ b/apps/web/src/components/leaderboard.test.tsx
+@@ -1,15 +1,16 @@
+ // @vitest-environment jsdom
+-// Region Top 10: one reusable component on every role's dashboard. It owns its query, shows
+-// its own loading / error / empty states, and a leaderboard failure never breaks the dashboard.
++// Region Top 10, All ALC Scores and the score reference: reusable components composed into
++// each role's dashboard. Each owns its query and its loading / error / empty states, so a
++// leaderboard failure never breaks the page. ALC Performance shows only personal performance.
+ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+ import { api, ApiError } from '../lib/api'
+-import { deferred, fakeApi, render, settle } from '../test/harness'
++import { button, click, deferred, fakeApi, render, selectValue, settle } from '../test/harness'
+ import AdminDashboard from '../pages/AdminDashboard'
+ import AlcDashboard from '../pages/AlcDashboard'
+ import DcuDashboard from '../pages/DcuDashboard'
+ import Performance from '../pages/Performance'
+ import SbuDashboard from '../pages/SbuDashboard'
+-import { RegionTop10, RegionTop10ScoreReference, type RegionTop10Data } from './leaderboard'
++import { AllRegionScores, RegionTop10, RegionTop10ScoreReference, type RegionTop10Data, type RegionTop10Item } from './leaderboard'
+ 
+ vi.mock('../lib/api', () => {
+   class ApiError extends Error { constructor(message: string, public status: number) { super(message) } }
+@@ -86,57 +87,186 @@ const dcuDash = { ...sbuDash, role: 'DCU', unit: { type: 'DCU', id: 'd1', code:
+ const alcDash = { activities: 5, pending: 1, verified: 3, corrections: 0, rejected: 1, learners: 10, leads: 20, admissions: 2, active_partners: 2, recent_activities: [], upcoming_tasks: [], notifications: [], challenge: { status: 'NOT_CONFIGURED', targets: {}, achieved: {} } }
+ const adminDash = { total_alcs: 3, active_alcs: 3, activities_submitted: 5, pending_verification: 1, verified_activities: 3, correction_required: 0, rejected_activities: 1, verified_learners: 10, verified_leads: 20, verified_admissions: 2, active_partnerships: 2, status_distribution: [], submission_trend: [], verified_categories: [] }
+ 
++// The complete regional ranking: two DCUs, four SBUs. Ranks/scores are regional and fixed.
++const SCORES_URL = '/leaderboard/region-scores'
++const nashik = { code: 'DCU_NASHIK', name: 'DCU Nashik' }
++const puneNorth = { code: 'DCU_PUNE_NORTH', name: 'DCU Pune North' }
++function scored(rank: number, code: string, sbu: string, dcu: typeof nashik, score: number): RegionTop10Item {
++  return { rank, alc_id: `id-${code}`, alc_code: code, alc_name: `Centre ${code}`, sbu: { code: sbu, name: `${sbu} name` }, dcu, verified_leads: 100 - rank, verified_admissions: 10, activities_done: 3, partners: 2, score }
++}
++const allScores: RegionTop10Data = {
++  period: 'LIFETIME', generated_at: '2026-10-03T10:00:00Z',
++  items: [
++    scored(1, 'A1', 'SBU 4', nashik, 91.25), scored(2, 'B1', 'SBU_PN_1', puneNorth, 85),
++    scored(3, 'A2', 'SBU 6', nashik, 70.5), scored(4, 'B2', 'SBU_PN_2', puneNorth, 60),
++    scored(5, 'A3', 'SBU 4', nashik, 40), scored(6, 'B3', 'SBU_PN_1', puneNorth, 12.34),
++  ],
++}
++
+ const BOARD = 'section[aria-labelledby="region-top10-title"]'
++const DIRECTORY = 'section[aria-labelledby="region-scores-title"]'
+ const REFERENCE = 'section[aria-labelledby="region-top10-reference-title"]'
++const PERSONAL = ['Record activity', 'Verified learners', 'Growth Challenge', 'Recent activities', 'Upcoming tasks', 'Recent verification results']
++
++function directoryRows(container: Element) {
++  return [...container.querySelectorAll(`${DIRECTORY} tbody tr`)].map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent))
++}
++const shown = (container: Element) => directoryRows(container).map(r => [r[0], r[1], r[9]])  // rank, code, score
++const select = (container: Element, name: string) => container.querySelector<HTMLSelectElement>(`${DIRECTORY} select[aria-label="${name}"]`)!
++const options = (el: HTMLSelectElement) => [...el.options].map(o => o.textContent)
++
++function leaderboardApi(dashboardPath?: string, dashboard?: unknown) {
++  return fakeApi(get, path => {
++    if (path === URL) return top
++    if (path === SCORES_URL) return allScores
++    if (path === dashboardPath) return dashboard
++    throw new Error(path)
++  })
++}
+ 
+-describe('Region Top 10 on every dashboard', () => {
++describe('dashboard composition', () => {
+   it.each([
+     ['ADMIN', <AdminDashboard />, '/admin/dashboard', adminDash, 'Administration Overview'],
+     ['DCU', <DcuDashboard />, '/portal/dashboard', dcuDash, 'DCU Nashik'],
+     ['SBU', <SbuDashboard />, '/portal/dashboard', sbuDash, 'SBU Dashboard'],
+-  ])('%s dashboard: Region Top 10, then the score reference as the last section', async (_role, ui, dashboardPath, dashboard, title) => {
+-    const api = fakeApi(get, path => path === URL ? top : path === dashboardPath ? dashboard : (() => { throw new Error(path) })())
++  ])('%s: existing dashboard, Region Top 10, All ALC Scores, then the score reference last', async (_role, ui, dashboardPath, dashboard, title) => {
++    const api = leaderboardApi(dashboardPath, dashboard)
+     const { container } = await render(ui)
+     expect(container.querySelector('h1')?.textContent).toBe(title)
+-    const boards = container.querySelectorAll(BOARD)
+-    const references = container.querySelectorAll(REFERENCE)
+-    expect(boards).toHaveLength(1)
+-    expect(references).toHaveLength(1)
+-    expect(boards[0]!.nextElementSibling).toBe(references[0])
+-    expect(references[0]!.parentElement!.lastElementChild).toBe(references[0])
+-    expect(references[0]!.textContent).toContain('How the Region Top 10 Score Is Calculated')
+-    expect(references[0]!.textContent).toContain('For reference only')
++    const board = container.querySelectorAll(BOARD)
++    const directory = container.querySelectorAll(DIRECTORY)
++    const reference = container.querySelectorAll(REFERENCE)
++    expect([board.length, directory.length, reference.length]).toEqual([1, 1, 1])
++    expect(board[0]!.nextElementSibling).toBe(directory[0])
++    expect(directory[0]!.nextElementSibling).toBe(reference[0])
++    expect(reference[0]!.parentElement!.lastElementChild).toBe(reference[0])
++    expect(reference[0]!.textContent).toContain('How the Region Top 10 Score Is Calculated')
++    expect(reference[0]!.textContent).toContain('For reference only')
++    expect(board[0]!.querySelectorAll('select')).toHaveLength(0)  // the Top 10 has no filters
++    expect(select(container, 'DCU')).not.toBeNull()
++    expect(select(container, 'SBU')).not.toBeNull()
+     expect(rows(container).map(r => r[1])).toEqual(['57210164', '57210168'])
+-    // The reference is static: the only calls are the dashboard and one leaderboard request.
+-    expect(api.calls.sort()).toEqual([dashboardPath, URL].sort())
++    expect(directoryRows(container)).toHaveLength(6)  // regional, not limited to the user's unit
++    // The reference is static: only the dashboard and the two leaderboard requests are made.
++    expect(api.calls.sort()).toEqual([dashboardPath, URL, SCORES_URL].sort())
+   })
+ 
+-  it.each([
+-    ['ALC', <AlcDashboard />],
+-    ['ALC Performance', <Performance />],
+-  ])('%s: Region Top 10 is the last section and there is no score reference', async (_role, ui) => {
+-    const api = fakeApi(get, path => path === URL ? top : path === '/portal/dashboard' ? alcDash : (() => { throw new Error(path) })())
+-    const { container } = await render(ui)
++  it('ALC dashboard: only Region Top 10 and All ALC Scores, no personal performance', async () => {
++    const api = leaderboardApi()
++    const { container } = await render(<AlcDashboard />)
+     expect(container.querySelector('h1')?.textContent).toBe('ALC Dashboard')
+-    const boards = container.querySelectorAll(BOARD)
+-    expect(boards).toHaveLength(1)
+-    expect(boards[0]!.parentElement!.lastElementChild).toBe(boards[0])
++    const board = container.querySelectorAll(BOARD)
++    const directory = container.querySelectorAll(DIRECTORY)
++    expect([board.length, directory.length]).toEqual([1, 1])
++    expect(board[0]!.nextElementSibling).toBe(directory[0])
++    expect(directory[0]!.parentElement!.lastElementChild).toBe(directory[0])
++    expect(board[0]!.querySelectorAll('select')).toHaveLength(0)
++    expect(select(container, 'DCU')).not.toBeNull()
++    expect(select(container, 'SBU')).not.toBeNull()
+     expect(container.querySelectorAll(REFERENCE)).toHaveLength(0)
+-    expect(container.textContent).not.toContain('How the Region Top 10 Score Is Calculated')
+-    expect(rows(container).map(r => r[1])).toEqual(['57210164', '57210168'])
+-    expect(api.to(URL)).toHaveLength(1)
++    for (const phrase of PERSONAL) expect(container.textContent).not.toContain(phrase)
++    expect(api.calls.sort()).toEqual([URL, SCORES_URL].sort())  // no personal dashboard request
++  })
++
++  it('ALC Performance: complete personal performance, no leaderboard', async () => {
++    const api = leaderboardApi('/portal/dashboard', alcDash)
++    const { container } = await render(<Performance />)
++    expect(container.querySelector('h1')?.textContent).toBe('Performance')
++    for (const phrase of PERSONAL) expect(container.textContent).toContain(phrase)
++    expect(container.textContent).toContain('Verified admissions')
++    expect(container.textContent).toContain('Active partnerships')
++    for (const sel of [BOARD, DIRECTORY, REFERENCE]) expect(container.querySelectorAll(sel)).toHaveLength(0)
++    expect(container.querySelectorAll('select')).toHaveLength(0)
++    expect(api.calls).toEqual(['/portal/dashboard'])  // unchanged personal data source only
+   })
+ 
+   it('a leaderboard failure leaves the dashboard and the reference working', async () => {
+-    fakeApi(get, path => { if (path === URL) throw new ApiError('Leaderboard unavailable', 500); return sbuDash })
++    fakeApi(get, path => { if (path === URL || path === SCORES_URL) throw new ApiError('Leaderboard unavailable', 500); return sbuDash })
+     const { container } = await render(<SbuDashboard />)
+     expect(container.querySelector('h1')?.textContent).toBe('SBU Dashboard')
+     expect(container.textContent).toContain('Verified admissions')
+-    expect(container.textContent).toContain('Leaderboard unavailable')
++    expect(container.querySelector(BOARD)!.textContent).toContain('Leaderboard unavailable')
++    expect(container.querySelector(DIRECTORY)!.textContent).toContain('Leaderboard unavailable')
+     expect(container.querySelectorAll(REFERENCE)).toHaveLength(1)
+   })
+ })
+ 
++describe('AllRegionScores', () => {
++  const regional = allScores.items.map(x => [String(x.rank), x.alc_code, x.score.toFixed(2)])
++  const only = (...codes: string[]) => regional.filter(r => codes.includes(r[1]!))
++
++  it('defaults to All DCUs / All SBUs and shows every ALC with regional rank and score', async () => {
++    const api = leaderboardApi()
++    const { container } = await render(<AllRegionScores />)
++    expect([...container.querySelectorAll(`${DIRECTORY} thead th`)].map(th => th.textContent)).toEqual([
++      'Regional Rank', 'ALC Code', 'ALC Name', 'SBU', 'DCU', 'Verified Leads', 'Verified Admissions', 'Verified Activities', 'Active Partners', 'Regional Score',
++    ])
++    expect(select(container, 'DCU').value).toBe('')
++    expect(select(container, 'SBU').value).toBe('')
++    expect(options(select(container, 'DCU'))).toEqual(['All DCUs', 'DCU Nashik', 'DCU Pune North'])
++    expect(options(select(container, 'SBU'))).toEqual(['All SBUs', 'SBU 4', 'SBU 6', 'SBU_PN_1', 'SBU_PN_2'])
++    expect(shown(container)).toEqual(regional)
++    expect(container.textContent).toContain('Showing 6 of 6 ALCs')
++    expect(container.querySelectorAll(`${DIRECTORY} a`)).toHaveLength(0)
++    expect(api.calls).toEqual([SCORES_URL])
++  })
++
++  it('a DCU filter narrows rows and SBU options, keeping regional ranks and scores', async () => {
++    const api = leaderboardApi()
++    const { container } = await render(<AllRegionScores />)
++    await selectValue(select(container, 'DCU'), 'DCU_PUNE_NORTH')
++    expect(shown(container)).toEqual(only('B1', 'B2', 'B3'))  // ranks 2, 4, 6 — not renumbered
++    expect(options(select(container, 'SBU'))).toEqual(['All SBUs', 'SBU_PN_1', 'SBU_PN_2'])
++    expect(container.textContent).toContain('Showing 3 of 6 ALCs')
++    expect(api.calls).toEqual([SCORES_URL])  // filtering makes no request and rescoring is impossible
++  })
++
++  it('an SBU filter shows only that SBU', async () => {
++    leaderboardApi()
++    const { container } = await render(<AllRegionScores />)
++    await selectValue(select(container, 'DCU'), 'DCU_NASHIK')
++    await selectValue(select(container, 'SBU'), 'SBU 4')
++    expect(shown(container)).toEqual(only('A1', 'A3'))
++  })
++
++  it('changing DCU resets an SBU that no longer belongs to it', async () => {
++    leaderboardApi()
++    const { container } = await render(<AllRegionScores />)
++    await selectValue(select(container, 'SBU'), 'SBU_PN_1')
++    expect(shown(container)).toEqual(only('B1', 'B3'))
++    await selectValue(select(container, 'DCU'), 'DCU_PUNE_NORTH')  // still valid: kept
++    expect(select(container, 'SBU').value).toBe('SBU_PN_1')
++    await selectValue(select(container, 'DCU'), 'DCU_NASHIK')  // invalid now: reset
++    expect(select(container, 'SBU').value).toBe('')
++    expect(shown(container)).toEqual(only('A1', 'A2', 'A3'))
++  })
++
++  it('clearing the filters restores the full regional list', async () => {
++    leaderboardApi()
++    const { container } = await render(<AllRegionScores />)
++    await selectValue(select(container, 'DCU'), 'DCU_NASHIK')
++    await selectValue(select(container, 'SBU'), 'SBU 6')
++    expect(shown(container)).toEqual(only('A2'))
++    await click(button(container, 'Clear filters'))
++    expect([select(container, 'DCU').value, select(container, 'SBU').value]).toEqual(['', ''])
++    expect(shown(container)).toEqual(regional)
++  })
++
++  it('shows its own loading, empty and error states', async () => {
++    const pending = deferred<RegionTop10Data>()
++    fakeApi(get, () => pending.promise)
++    const loading = await render(<AllRegionScores />)
++    expect(loading.container.textContent).toContain('Loading ALC scores')
++    pending.resolve({ ...allScores, items: [] })
++    await settle()
++    expect(loading.container.textContent).toContain('No scored ALCs yet')
++    expect(loading.container.querySelector('select')).toBeNull()
++    fakeApi(get, () => { throw new ApiError('Scores unavailable', 500) })
++    const failed = await render(<AllRegionScores />)
++    expect(failed.container.textContent).toContain('Scores unavailable')
++  })
++})
++
+ describe('RegionTop10ScoreReference', () => {
+   it('shows the four equal 25% components, the formula, the example and the notes', async () => {
+     const { container } = await render(<RegionTop10ScoreReference />)
+diff --git a/apps/web/src/components/leaderboard.tsx b/apps/web/src/components/leaderboard.tsx
+index 59c57b0..229f564 100644
+--- a/apps/web/src/components/leaderboard.tsx
++++ b/apps/web/src/components/leaderboard.tsx
+@@ -1,6 +1,7 @@
++import { useState } from 'react'
+ import { useQuery } from '@tanstack/react-query'
+ import { api } from '../lib/api'
+-import { Empty, ErrorState, formatNumber, Loading } from './ui'
++import { Empty, ErrorState, Filter, formatNumber, Loading } from './ui'
+ 
+ interface UnitBrief { code: string; name: string }
+ export interface RegionTop10Item {
+@@ -9,22 +10,66 @@ export interface RegionTop10Item {
+ }
+ export interface RegionTop10Data { period: string; generated_at: string; items: RegionTop10Item[] }
+ 
++// One table layout for both leaderboard views. Rows deliberately do not link to ALC detail
++// pages (most ALCs are outside the viewer's scope).
++function ScoreTable({ items, rankLabel, scoreLabel, className = '' }: { items: RegionTop10Item[]; rankLabel: string; scoreLabel: string; className?: string }) {
++  return <div className={`table-wrap ${className}`}><table className="table-dense">
++    <thead className="sticky top-0 z-10"><tr><th className="text-right">{rankLabel}</th><th>ALC Code</th><th>ALC Name</th><th>SBU</th><th>DCU</th><th className="text-right">Verified Leads</th><th className="text-right">Verified Admissions</th><th className="text-right">Verified Activities</th><th className="text-right">Active Partners</th><th className="text-right">{scoreLabel}</th></tr></thead>
++    <tbody>{items.map(x => <tr key={x.alc_id}>
++      <td className="text-right font-bold text-navy">{x.rank}</td><td className="font-semibold text-navy">{x.alc_code}</td><td>{x.alc_name}</td>
++      <td>{x.sbu?.code ?? '—'}</td><td className="text-sm text-slate-600">{x.dcu?.name ?? '—'}</td>
++      <td className="text-right">{formatNumber(x.verified_leads)}</td><td className="text-right">{formatNumber(x.verified_admissions)}</td><td className="text-right">{formatNumber(x.activities_done)}</td><td className="text-right">{formatNumber(x.partners)}</td>
++      <td className="text-right font-semibold text-navy">{x.score.toFixed(2)}</td>
++    </tr>)}</tbody>
++  </table></div>
++}
++
+ // Region Top 10 (``GET /leaderboard/region-top10``): the same regional ranking for ADMIN, DCU,
+-// SBU and ALC. Owns its query, so a failure here never breaks the dashboard it sits in. Rows
+-// deliberately do not link to ALC detail pages (most ALCs are outside the viewer's scope).
++// SBU and ALC. Fixed: no filters. Owns its query, so a failure here never breaks the page.
+ export function RegionTop10() {
+   const q = useQuery({ queryKey: ['region-top10'], queryFn: () => api.get<RegionTop10Data>('/leaderboard/region-top10') })
+   return <section className="mt-8" aria-labelledby="region-top10-title">
+     <div className="mb-3"><h2 id="region-top10-title" className="font-bold text-navy">Region Top 10</h2><p className="text-xs text-slate-500">Lifetime verified performance of active ALCs across the region. Score weights verified leads, verified admissions, verified activities and active partners equally (25% each), each as a regional percentile.</p></div>
+-    {q.isLoading ? <Loading label="Loading Region Top 10" /> : q.error || !q.data ? <ErrorState error={q.error} /> : !q.data.items.length ? <Empty title="No ranked ALCs yet" message="ALCs appear here once they have verified activities or active partners." /> : <div className="table-wrap"><table className="table-dense">
+-      <thead><tr><th className="text-right">Rank</th><th>ALC Code</th><th>ALC Name</th><th>SBU</th><th>DCU</th><th className="text-right">Verified Leads</th><th className="text-right">Verified Admissions</th><th className="text-right">Verified Activities</th><th className="text-right">Active Partners</th><th className="text-right">Score</th></tr></thead>
+-      <tbody>{q.data.items.map(x => <tr key={x.alc_id}>
+-        <td className="text-right font-bold text-navy">{x.rank}</td><td className="font-semibold text-navy">{x.alc_code}</td><td>{x.alc_name}</td>
+-        <td>{x.sbu?.code ?? '—'}</td><td className="text-sm text-slate-600">{x.dcu?.name ?? '—'}</td>
+-        <td className="text-right">{formatNumber(x.verified_leads)}</td><td className="text-right">{formatNumber(x.verified_admissions)}</td><td className="text-right">{formatNumber(x.activities_done)}</td><td className="text-right">{formatNumber(x.partners)}</td>
+-        <td className="text-right font-semibold text-navy">{x.score.toFixed(2)}</td>
+-      </tr>)}</tbody>
+-    </table></div>}
++    {q.isLoading ? <Loading label="Loading Region Top 10" /> : q.error || !q.data ? <ErrorState error={q.error} /> : !q.data.items.length ? <Empty title="No ranked ALCs yet" message="ALCs appear here once they have verified activities or active partners." /> : <ScoreTable items={q.data.items} rankLabel="Rank" scoreLabel="Score" />}
++  </section>
++}
++
++// Distinct units (by code) in name order, for the filter options.
++function unitOptions(units: (UnitBrief | null)[]): UnitBrief[] {
++  const byCode = new Map<string, UnitBrief>()
++  for (const unit of units) if (unit && !byCode.has(unit.code)) byCode.set(unit.code, unit)
++  return [...byCode.values()].sort((a, b) => a.name.localeCompare(b.name) || a.code.localeCompare(b.code))
++}
++
++// All ALC Scores (``GET /leaderboard/region-scores``): every eligible ALC with its regional rank
++// and score — the same ranking the Top 10 is cut from. The DCU / SBU filters only choose which
++// rows are shown: ranks and scores always come from the whole region and are never recomputed
++// or renumbered. The list is fetched once; changing a filter makes no request.
++export function AllRegionScores() {
++  const q = useQuery({ queryKey: ['region-scores'], queryFn: () => api.get<RegionTop10Data>('/leaderboard/region-scores') })
++  const [dcu, setDcu] = useState('')
++  const [sbu, setSbu] = useState('')
++  const items = q.data?.items ?? []
++  const dcus = unitOptions(items.map(x => x.dcu))
++  const sbus = unitOptions(items.filter(x => !dcu || x.dcu?.code === dcu).map(x => x.sbu))
++  function chooseDcu(code: string) {
++    setDcu(code)
++    // An SBU outside the newly chosen DCU would be an impossible combination: reset it.
++    if (sbu && !items.some(x => x.sbu?.code === sbu && (!code || x.dcu?.code === code))) setSbu('')
++  }
++  const rows = items.filter(x => (!dcu || x.dcu?.code === dcu) && (!sbu || x.sbu?.code === sbu))
++  const filtered = !!(dcu || sbu)
++  return <section className="mt-8" aria-labelledby="region-scores-title">
++    <div className="mb-3"><h2 id="region-scores-title" className="font-bold text-navy">All ALC Scores</h2><p className="text-xs text-slate-500">View the regional score and performance metrics for eligible ALCs. Filters only narrow the list: regional rank and regional score always compare each ALC with the whole region.</p></div>
++    {q.isLoading ? <Loading label="Loading ALC scores" /> : q.error || !q.data ? <ErrorState error={q.error} /> : !items.length ? <Empty title="No scored ALCs yet" message="ALCs appear here once they have verified activities or active partners." /> : <>
++      <div className="panel mb-3 flex flex-wrap items-end gap-3 p-4">
++        <div className="w-full sm:w-64"><Filter label="DCU"><select aria-label="DCU" value={dcu} onChange={e => chooseDcu(e.target.value)}><option value="">All DCUs</option>{dcus.map(d => <option key={d.code} value={d.code}>{d.name}</option>)}</select></Filter></div>
++        <div className="w-full sm:w-64"><Filter label="SBU"><select aria-label="SBU" value={sbu} onChange={e => setSbu(e.target.value)}><option value="">All SBUs</option>{sbus.map(s => <option key={s.code} value={s.code}>{s.code}</option>)}</select></Filter></div>
++        <p className="pb-2 text-sm text-slate-600" aria-live="polite">Showing {formatNumber(rows.length)} of {formatNumber(items.length)} ALCs</p>
++        {filtered && <button type="button" className="btn-ghost" onClick={() => { setDcu(''); setSbu('') }}>Clear filters</button>}
++      </div>
++      {rows.length ? <ScoreTable items={rows} rankLabel="Regional Rank" scoreLabel="Regional Score" className="max-h-[36rem] overflow-y-auto" /> : <Empty title="No ALCs match these filters" message="Choose another DCU or SBU, or clear the filters." />}
++    </>}
+   </section>
+ }
+ 
+diff --git a/apps/web/src/pages/AdminDashboard.tsx b/apps/web/src/pages/AdminDashboard.tsx
+index 1bb1062..9b8e376 100644
+--- a/apps/web/src/pages/AdminDashboard.tsx
++++ b/apps/web/src/pages/AdminDashboard.tsx
+@@ -3,7 +3,7 @@ import { Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tool
+ import { api } from '../lib/api'
+ import { CHART_AXIS, CHART_GRID, CHART_PRIMARY, statusChartColor } from '../lib/theme'
+ import { ErrorState, formatNumber, Loading, MetricCard, PageHeader } from '../components/ui'
+-import { RegionTop10, RegionTop10ScoreReference } from '../components/leaderboard'
++import { AllRegionScores, RegionTop10, RegionTop10ScoreReference } from '../components/leaderboard'
+ 
+ interface AdminData { total_alcs: number; active_alcs: number; activities_submitted: number; pending_verification: number; verified_activities: number; correction_required: number; rejected_activities: number; verified_learners: number; verified_leads: number; verified_admissions: number; active_partnerships: number; status_distribution: {name:string;value:number}[]; submission_trend:{date:string;count:number}[] }
+ export default function AdminDashboard() {
+@@ -13,6 +13,7 @@ export default function AdminDashboard() {
+   return <><PageHeader title="Administration Overview" description="System-wide performance. Outcome metrics include verified activities only."/><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">{cards.map(([label,value]) => <MetricCard key={label} label={label} value={value} hint={label.startsWith('Verified') ? 'Verified data only' : undefined}/>)}</div>
+     <div className="mt-6 grid gap-6 xl:grid-cols-[1.4fr_1fr]"><section className="panel p-5"><h2 className="font-bold text-navy">Activity submissions over time</h2><p className="mb-4 text-xs text-slate-500">Last 30 activity dates</p><div className="h-72"><ResponsiveContainer width="100%" height="100%"><LineChart data={data.submission_trend}><XAxis dataKey="date" tick={{fontSize:11,fill:CHART_AXIS}} stroke={CHART_GRID}/><YAxis allowDecimals={false} tick={{fill:CHART_AXIS}} stroke={CHART_GRID}/><Tooltip/><Line dataKey="count" stroke={CHART_PRIMARY} strokeWidth={2} dot={false}/></LineChart></ResponsiveContainer></div></section><section className="panel p-5"><h2 className="font-bold text-navy">Verification status</h2><p className="mb-4 text-xs text-slate-500">All recorded activities</p><div className="h-72"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={data.status_distribution} dataKey="value" nameKey="name" innerRadius={50} outerRadius={90}>{data.status_distribution.map(s => <Cell key={s.name} fill={statusChartColor(s.name)} stroke="#fff" strokeWidth={2}/>)}</Pie><Tooltip/><Legend iconType="circle" iconSize={8} wrapperStyle={{fontSize:12}} formatter={v => <span className="text-ink">{v}</span>}/></PieChart></ResponsiveContainer></div></section></div>
+     <RegionTop10/>
++    <AllRegionScores/>
+     <RegionTop10ScoreReference/>
+   </>
+ }
+diff --git a/apps/web/src/pages/AlcDashboard.tsx b/apps/web/src/pages/AlcDashboard.tsx
+index 3ac8e55..3c54401 100644
+--- a/apps/web/src/pages/AlcDashboard.tsx
++++ b/apps/web/src/pages/AlcDashboard.tsx
+@@ -5,13 +5,15 @@ import { api } from '../lib/api'
+ import { challengePeriodSummary, type ChallengePeriod } from '../lib/challenge'
+ import type { ActivityListItem, Task } from '../types'
+ import { Badge, ErrorState, formatDate, formatNumber, Loading, MetricCard, PageHeader } from '../components/ui'
+-import { RegionTop10 } from '../components/leaderboard'
++import { AllRegionScores, RegionTop10 } from '../components/leaderboard'
+ 
+ interface Notice { id:string; title:string; message:string; is_read:boolean; created_at:string; entity_type?:string|null; entity_id?:string|null }
+ interface Dashboard { activities: number; pending: number; verified: number; corrections: number; rejected: number; learners: number; leads: number; admissions: number; active_partners: number; recent_activities: ActivityListItem[]; upcoming_tasks: Task[]; notifications: Notice[]; challenge: Partial<ChallengePeriod> & { targets: Record<string,number>; achieved: Record<string,number> } }
+ const CORRECTIONS_URL = '/portal/activities?status=CORRECTION_REQUIRED'
+ 
+-export default function AlcDashboard() {
++// The ALC's own performance (dashboard metrics, Growth Challenge, recent work, verification
++// results). Rendered by the Performance page; unchanged from the former ALC dashboard body.
++export function AlcPerformanceOverview() {
+   const navigate = useNavigate(); const client = useQueryClient()
+   const { data, isLoading, error } = useQuery({ queryKey: ['alc-dashboard'], queryFn: () => api.get<Dashboard>('/portal/dashboard') })
+   async function openNotice(n: Notice) {
+@@ -19,12 +21,20 @@ export default function AlcDashboard() {
+     if (n.entity_type === 'activity' && n.entity_id) navigate(`/portal/activities/${n.entity_id}`)
+   }
+   if (isLoading) return <Loading label="Preparing your dashboard"/>; if (error || !data) return <ErrorState error={error}/>
+-  return <><PageHeader title="ALC Dashboard" description="Your centre’s verified growth and current work." actions={<Link to="/portal/activities/new" className="btn-primary">Record activity</Link>}/>
++  return <><PageHeader title="Performance" description="Your centre’s verified growth and current work." actions={<Link to="/portal/activities/new" className="btn-primary">Record activity</Link>}/>
+     {data.corrections > 0 && <Link to={CORRECTIONS_URL} className="mb-5 flex items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 hover:bg-amber-100"><AlertTriangle className="h-5 w-5 shrink-0 text-amber-700"/><div className="flex-1"><p className="font-semibold text-amber-900">{data.corrections} {data.corrections === 1 ? 'activity needs' : 'activities need'} correction</p><p className="text-sm text-amber-800">Your reviewer asked for changes. Open {data.corrections === 1 ? 'it' : 'them'}, fix the details, and resubmit.</p></div><span className="inline-flex items-center gap-1 text-sm font-semibold text-amber-900">Review now<ChevronRight className="h-4 w-4"/></span></Link>}
+     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><MetricCard label="Activities submitted" value={data.activities}/><MetricCard label="Pending verification" value={data.pending}/><MetricCard label="Verified activities" value={data.verified} hint={`${data.rejected} rejected`}/><Link to={CORRECTIONS_URL} className="block rounded-lg transition hover:ring-2 hover:ring-amber-300" title="Show activities that need correction"><MetricCard label="Correction required" value={data.corrections} hint={data.corrections ? 'Click to fix and resubmit' : 'Nothing to fix'}/></Link><MetricCard label="Verified learners" value={formatNumber(data.learners)} hint="Verified activities only"/><MetricCard label="Verified leads" value={formatNumber(data.leads)} hint="Verified activities only"/><MetricCard label="Verified admissions" value={formatNumber(data.admissions)} hint="Verified activities only"/><MetricCard label="Active partnerships" value={data.active_partners}/></div>
+     <section className="mt-6 panel p-5"><div className="mb-4"><h2 className="font-bold text-navy">Growth Challenge</h2><p className="text-sm text-slate-500">{data.challenge.status === 'NOT_CONFIGURED' ? 'No Growth Challenge is running. A challenge period has not been configured yet.' : [data.challenge.name, data.challenge.period_start && data.challenge.period_end ? `${formatDate(data.challenge.period_start)} – ${formatDate(data.challenge.period_end)}` : '', challengePeriodSummary(data.challenge)].filter(Boolean).join(' · ')}</p><p className="text-sm text-slate-500">Official progress uses verified activities and active partners.</p></div><div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">{Object.keys(data.challenge.targets).map((key) => { const achieved = data.challenge.achieved[key] ?? 0; const target = data.challenge.targets[key] ?? 0; const pct = Math.min(100, target ? achieved / target * 100 : 0); return <div key={key}><div className="flex justify-between text-sm"><span className="capitalize font-medium">{key}</span><span>{achieved} / {target}</span></div><div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full bg-teal" style={{ width: `${pct}%` }}/></div></div> })}</div></section>
+     <div className="mt-6 grid gap-6 xl:grid-cols-[1.4fr_.8fr]"><section><div className="mb-3 flex items-center justify-between"><h2 className="font-bold text-navy">Recent activities</h2><Link className="text-sm font-semibold text-teal" to="/portal/activities">View all</Link></div>{data.recent_activities.length ? <div className="table-wrap"><table><thead><tr><th>Activity</th><th>Date</th><th>Status</th></tr></thead><tbody>{data.recent_activities.map((a) => <tr key={a.id}><td><Link to={`/portal/activities/${a.id}`} className="font-semibold text-navy hover:text-teal">{a.activity_number}</Link><p className="text-xs text-slate-500">{a.activity_type}</p></td><td>{formatDate(a.activity_date)}</td><td><Badge status={a.status}/></td></tr>)}</tbody></table></div> : <div className="panel p-5 text-sm text-slate-500">No activities yet. <Link to="/portal/activities/new" className="font-semibold text-teal">Record your first activity</Link>.</div>}</section><section><h2 className="mb-3 font-bold text-navy">Upcoming tasks</h2><div className="panel divide-y">{data.upcoming_tasks.length ? data.upcoming_tasks.map((t) => <div key={t.id} className="p-4"><p className="text-sm font-semibold">{t.title}</p><p className="mt-1 text-xs text-slate-500">Due {formatDate(t.due_date)}</p></div>) : <p className="p-5 text-sm text-slate-500">No open tasks.</p>}</div></section></div>
+     <section className="mt-6"><h2 className="mb-3 font-bold text-navy">Recent verification results</h2><div className="panel divide-y">{data.notifications.length?data.notifications.map(n=>{ const linked = n.entity_type === 'activity' && !!n.entity_id; return <button type="button" key={n.id} onClick={()=>openNotice(n)} disabled={!linked && n.is_read} className={`block w-full p-4 text-left ${n.is_read?'':'bg-teal/5'} ${linked?'hover:bg-slate-50':''}`}><div className="flex items-center justify-between gap-3"><b className="text-sm">{!n.is_read && <span className="mr-2 inline-block h-2 w-2 rounded-full bg-teal align-middle" aria-label="Unread"/>}{n.title}</b><span className="flex items-center gap-1 text-xs text-slate-500">{formatDate(n.created_at)}{linked && <ChevronRight className="h-3.5 w-3.5"/>}</span></div><p className="mt-1 text-sm text-slate-600">{n.message}</p></button> }):<p className="p-5 text-sm text-slate-500">No review results yet.</p>}</div></section>
++  </>
++}
++
++// ALC dashboard (``/portal``): the regional comparison only. Personal performance lives on the
++// Performance page (``AlcPerformanceOverview``).
++export default function AlcDashboard() {
++  return <><PageHeader title="ALC Dashboard" description="How ALCs across the region compare on verified performance."/>
+     <RegionTop10/>
++    <AllRegionScores/>
+   </>
+ }
+\ No newline at end of file
+diff --git a/apps/web/src/pages/DcuDashboard.tsx b/apps/web/src/pages/DcuDashboard.tsx
+index 608244b..986b18d 100644
+--- a/apps/web/src/pages/DcuDashboard.tsx
++++ b/apps/web/src/pages/DcuDashboard.tsx
+@@ -4,7 +4,7 @@ import { ChevronRight } from 'lucide-react'
+ import { api } from '../lib/api'
+ import type { ActivityListItem, SbuStats, UnitRef } from '../types'
+ import { Badge, ErrorState, formatDate, formatNumber, Loading, MetricCard, PageHeader } from '../components/ui'
+-import { RegionTop10, RegionTop10ScoreReference } from '../components/leaderboard'
++import { AllRegionScores, RegionTop10, RegionTop10ScoreReference } from '../components/leaderboard'
+ 
+ interface DcuDash extends Omit<SbuStats, 'alcs'> {
+   role: string; unit: (UnitRef & { type: string }) | null; sbus: number; assigned_alcs: number
+@@ -58,6 +58,7 @@ export default function DcuDashboard() {
+       <div className="table-wrap"><table><thead><tr><th>Activity</th><th>ALC</th><th>SBU</th><th>Activity date</th><th>Status</th></tr></thead><tbody>{data.recent_activities.length ? data.recent_activities.map(({ activity: a, alc, sbu_code }) => <tr key={a.id}><td><Link to={`/portal/activities/${a.id}`} className="font-semibold text-navy hover:text-teal">{a.activity_number}</Link><p className="text-xs text-slate-500">{a.activity_type}</p></td><td><Link to={`/portal/alcs/${alc.id}`} className="hover:text-teal">{alc.alc_code}</Link><p className="text-xs text-slate-500">{alc.alc_name}</p></td><td>{sbu_code ?? '—'}</td><td>{formatDate(a.activity_date)}</td><td><Badge status={a.status} /></td></tr>) : <tr><td colSpan={5} className="p-5 text-sm text-slate-500">No submitted activities yet.</td></tr>}</tbody></table></div>
+     </section>
+     <RegionTop10 />
++    <AllRegionScores />
+     <RegionTop10ScoreReference />
+   </>
+ }
+diff --git a/apps/web/src/pages/Performance.tsx b/apps/web/src/pages/Performance.tsx
+index 0226dbd..8e018bf 100644
+--- a/apps/web/src/pages/Performance.tsx
++++ b/apps/web/src/pages/Performance.tsx
+@@ -1,3 +1,2 @@
+-import AlcDashboard from './AlcDashboard'
+-export default function Performance(){return <AlcDashboard/>}
+-
++import { AlcPerformanceOverview } from './AlcDashboard'
++export default function Performance(){return <AlcPerformanceOverview/>}
+diff --git a/apps/web/src/pages/SbuDashboard.tsx b/apps/web/src/pages/SbuDashboard.tsx
+index 1ec7ce0..8550178 100644
+--- a/apps/web/src/pages/SbuDashboard.tsx
++++ b/apps/web/src/pages/SbuDashboard.tsx
+@@ -4,7 +4,7 @@ import { Building2, ClipboardCheck, FileBarChart, Users } from 'lucide-react'
+ import { api } from '../lib/api'
+ import type { ActivityListItem } from '../types'
+ import { Badge, ErrorState, formatDate, formatNumber, Loading, MetricCard, PageHeader } from '../components/ui'
+-import { RegionTop10, RegionTop10ScoreReference } from '../components/leaderboard'
++import { AllRegionScores, RegionTop10, RegionTop10ScoreReference } from '../components/leaderboard'
+ 
+ interface SbuDash {
+   assigned_alcs: number; active_alcs: number; partners: number; activities: number; submitted: number
+@@ -42,6 +42,7 @@ export default function SbuDashboard() {
+       <div className="table-wrap"><table><thead><tr><th>Activity</th><th>ALC</th><th>Date</th><th>Status</th></tr></thead><tbody>{data.recent_activities.length ? data.recent_activities.map(({ activity: a, alc }) => <tr key={a.id}><td><Link to={`/portal/activities/${a.id}`} className="font-semibold text-navy hover:text-teal">{a.activity_number}</Link><p className="text-xs text-slate-500">{a.activity_type}</p></td><td>{alc.alc_code}<p className="text-xs text-slate-500">{alc.alc_name}</p></td><td>{formatDate(a.activity_date)}</td><td><Badge status={a.status} /></td></tr>) : <tr><td colSpan={4} className="p-5 text-sm text-slate-500">No submitted activities yet.</td></tr>}</tbody></table></div>
+     </div>
+     <RegionTop10 />
++    <AllRegionScores />
+     <RegionTop10ScoreReference />
+   </>
+ }
+\ No newline at end of file

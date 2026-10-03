@@ -1,6 +1,7 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import { Empty, ErrorState, formatNumber, Loading } from './ui'
+import { Empty, ErrorState, Filter, formatNumber, Loading } from './ui'
 
 interface UnitBrief { code: string; name: string }
 export interface RegionTop10Item {
@@ -9,22 +10,66 @@ export interface RegionTop10Item {
 }
 export interface RegionTop10Data { period: string; generated_at: string; items: RegionTop10Item[] }
 
+// One table layout for both leaderboard views. Rows deliberately do not link to ALC detail
+// pages (most ALCs are outside the viewer's scope).
+function ScoreTable({ items, rankLabel, scoreLabel, className = '' }: { items: RegionTop10Item[]; rankLabel: string; scoreLabel: string; className?: string }) {
+  return <div className={`table-wrap ${className}`}><table className="table-dense">
+    <thead className="sticky top-0 z-10"><tr><th className="text-right">{rankLabel}</th><th>ALC Code</th><th>ALC Name</th><th>SBU</th><th>DCU</th><th className="text-right">Verified Leads</th><th className="text-right">Verified Admissions</th><th className="text-right">Verified Activities</th><th className="text-right">Active Partners</th><th className="text-right">{scoreLabel}</th></tr></thead>
+    <tbody>{items.map(x => <tr key={x.alc_id}>
+      <td className="text-right font-bold text-navy">{x.rank}</td><td className="font-semibold text-navy">{x.alc_code}</td><td>{x.alc_name}</td>
+      <td>{x.sbu?.code ?? '—'}</td><td className="text-sm text-slate-600">{x.dcu?.name ?? '—'}</td>
+      <td className="text-right">{formatNumber(x.verified_leads)}</td><td className="text-right">{formatNumber(x.verified_admissions)}</td><td className="text-right">{formatNumber(x.activities_done)}</td><td className="text-right">{formatNumber(x.partners)}</td>
+      <td className="text-right font-semibold text-navy">{x.score.toFixed(2)}</td>
+    </tr>)}</tbody>
+  </table></div>
+}
+
 // Region Top 10 (``GET /leaderboard/region-top10``): the same regional ranking for ADMIN, DCU,
-// SBU and ALC. Owns its query, so a failure here never breaks the dashboard it sits in. Rows
-// deliberately do not link to ALC detail pages (most ALCs are outside the viewer's scope).
+// SBU and ALC. Fixed: no filters. Owns its query, so a failure here never breaks the page.
 export function RegionTop10() {
   const q = useQuery({ queryKey: ['region-top10'], queryFn: () => api.get<RegionTop10Data>('/leaderboard/region-top10') })
   return <section className="mt-8" aria-labelledby="region-top10-title">
     <div className="mb-3"><h2 id="region-top10-title" className="font-bold text-navy">Region Top 10</h2><p className="text-xs text-slate-500">Lifetime verified performance of active ALCs across the region. Score weights verified leads, verified admissions, verified activities and active partners equally (25% each), each as a regional percentile.</p></div>
-    {q.isLoading ? <Loading label="Loading Region Top 10" /> : q.error || !q.data ? <ErrorState error={q.error} /> : !q.data.items.length ? <Empty title="No ranked ALCs yet" message="ALCs appear here once they have verified activities or active partners." /> : <div className="table-wrap"><table className="table-dense">
-      <thead><tr><th className="text-right">Rank</th><th>ALC Code</th><th>ALC Name</th><th>SBU</th><th>DCU</th><th className="text-right">Verified Leads</th><th className="text-right">Verified Admissions</th><th className="text-right">Verified Activities</th><th className="text-right">Active Partners</th><th className="text-right">Score</th></tr></thead>
-      <tbody>{q.data.items.map(x => <tr key={x.alc_id}>
-        <td className="text-right font-bold text-navy">{x.rank}</td><td className="font-semibold text-navy">{x.alc_code}</td><td>{x.alc_name}</td>
-        <td>{x.sbu?.code ?? '—'}</td><td className="text-sm text-slate-600">{x.dcu?.name ?? '—'}</td>
-        <td className="text-right">{formatNumber(x.verified_leads)}</td><td className="text-right">{formatNumber(x.verified_admissions)}</td><td className="text-right">{formatNumber(x.activities_done)}</td><td className="text-right">{formatNumber(x.partners)}</td>
-        <td className="text-right font-semibold text-navy">{x.score.toFixed(2)}</td>
-      </tr>)}</tbody>
-    </table></div>}
+    {q.isLoading ? <Loading label="Loading Region Top 10" /> : q.error || !q.data ? <ErrorState error={q.error} /> : !q.data.items.length ? <Empty title="No ranked ALCs yet" message="ALCs appear here once they have verified activities or active partners." /> : <ScoreTable items={q.data.items} rankLabel="Rank" scoreLabel="Score" />}
+  </section>
+}
+
+// Distinct units (by code) in name order, for the filter options.
+function unitOptions(units: (UnitBrief | null)[]): UnitBrief[] {
+  const byCode = new Map<string, UnitBrief>()
+  for (const unit of units) if (unit && !byCode.has(unit.code)) byCode.set(unit.code, unit)
+  return [...byCode.values()].sort((a, b) => a.name.localeCompare(b.name) || a.code.localeCompare(b.code))
+}
+
+// All ALC Scores (``GET /leaderboard/region-scores``): every eligible ALC with its regional rank
+// and score — the same ranking the Top 10 is cut from. The DCU / SBU filters only choose which
+// rows are shown: ranks and scores always come from the whole region and are never recomputed
+// or renumbered. The list is fetched once; changing a filter makes no request.
+export function AllRegionScores() {
+  const q = useQuery({ queryKey: ['region-scores'], queryFn: () => api.get<RegionTop10Data>('/leaderboard/region-scores') })
+  const [dcu, setDcu] = useState('')
+  const [sbu, setSbu] = useState('')
+  const items = q.data?.items ?? []
+  const dcus = unitOptions(items.map(x => x.dcu))
+  const sbus = unitOptions(items.filter(x => !dcu || x.dcu?.code === dcu).map(x => x.sbu))
+  function chooseDcu(code: string) {
+    setDcu(code)
+    // An SBU outside the newly chosen DCU would be an impossible combination: reset it.
+    if (sbu && !items.some(x => x.sbu?.code === sbu && (!code || x.dcu?.code === code))) setSbu('')
+  }
+  const rows = items.filter(x => (!dcu || x.dcu?.code === dcu) && (!sbu || x.sbu?.code === sbu))
+  const filtered = !!(dcu || sbu)
+  return <section className="mt-8" aria-labelledby="region-scores-title">
+    <div className="mb-3"><h2 id="region-scores-title" className="font-bold text-navy">All ALC Scores</h2><p className="text-xs text-slate-500">View the regional score and performance metrics for eligible ALCs. Filters only narrow the list: regional rank and regional score always compare each ALC with the whole region.</p></div>
+    {q.isLoading ? <Loading label="Loading ALC scores" /> : q.error || !q.data ? <ErrorState error={q.error} /> : !items.length ? <Empty title="No scored ALCs yet" message="ALCs appear here once they have verified activities or active partners." /> : <>
+      <div className="panel mb-3 flex flex-wrap items-end gap-3 p-4">
+        <div className="w-full sm:w-64"><Filter label="DCU"><select aria-label="DCU" value={dcu} onChange={e => chooseDcu(e.target.value)}><option value="">All DCUs</option>{dcus.map(d => <option key={d.code} value={d.code}>{d.name}</option>)}</select></Filter></div>
+        <div className="w-full sm:w-64"><Filter label="SBU"><select aria-label="SBU" value={sbu} onChange={e => setSbu(e.target.value)}><option value="">All SBUs</option>{sbus.map(s => <option key={s.code} value={s.code}>{s.code}</option>)}</select></Filter></div>
+        <p className="pb-2 text-sm text-slate-600" aria-live="polite">Showing {formatNumber(rows.length)} of {formatNumber(items.length)} ALCs</p>
+        {filtered && <button type="button" className="btn-ghost" onClick={() => { setDcu(''); setSbu('') }}>Clear filters</button>}
+      </div>
+      {rows.length ? <ScoreTable items={rows} rankLabel="Regional Rank" scoreLabel="Regional Score" className="max-h-[36rem] overflow-y-auto" /> : <Empty title="No ALCs match these filters" message="Choose another DCU or SBU, or clear the filters." />}
+    </>}
   </section>
 }
 

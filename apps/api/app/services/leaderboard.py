@@ -1,8 +1,14 @@
-"""Region Top 10: one regional ALC leaderboard shared by every operational role.
+"""Region Top 10 and the regional score directory, shared by every operational role.
+
+Both are views of ONE regional ranking (``regional_ranking``): the directory lists every
+eligible ALC with its regional rank and score, and the Top 10 is exactly its first 10 rows.
+Eligibility, metrics, percentiles, weights, scores and ranks therefore have a single source.
 
 Intentionally regional: ADMIN, DCU, SBU and ALC users all see the same ranking, so nothing
-here uses ``app.services.scope``. It exposes only ALC identity (code, name, SBU, DCU), four
-lifetime aggregates and a score — never activity, partner, contact or user details.
+here uses ``app.services.scope``. Any DCU / SBU filtering of the directory happens after
+scoring (in the UI) and never re-normalises a subset. It exposes only ALC identity (code,
+name, SBU, DCU), four lifetime aggregates and a score — never activity, partner, contact or
+user details.
 
 Metrics (lifetime, each activity's *current* status):
 
@@ -153,8 +159,9 @@ def score_rows(rows: list[LeaderboardRow]) -> list[LeaderboardRow]:
     return rows
 
 
-def rank_rows(rows: list[LeaderboardRow], limit: int = TOP_N) -> list[LeaderboardRow]:
-    """Exact score descending, then ALC code ascending; the first ``limit`` rows."""
+def rank_rows(rows: list[LeaderboardRow], limit: int | None = TOP_N) -> list[LeaderboardRow]:
+    """Exact score descending, then ALC code ascending; the first ``limit`` rows (all when
+    ``limit`` is None)."""
     return sorted(rows, key=lambda r: (-r.score, r.alc_code))[:limit]
 
 
@@ -173,8 +180,14 @@ async def eligible_rows(db: AsyncSession) -> list[LeaderboardRow]:
     ]
 
 
-async def region_top10(db: AsyncSession) -> dict:
-    ranked = rank_rows(score_rows(await eligible_rows(db)))
+async def regional_ranking(db: AsyncSession) -> list[LeaderboardRow]:
+    """Every eligible ALC, scored against the whole eligible region and in regional rank
+    order. The single source for both the Top 10 and the score directory."""
+    return rank_rows(score_rows(await eligible_rows(db)), limit=None)
+
+
+def leaderboard_payload(ranked: list[LeaderboardRow]) -> dict:
+    """Response body: ``rank`` is the row's position in the complete regional ranking."""
     return {
         "period": PERIOD,
         "generated_at": datetime.now(timezone.utc),
@@ -195,3 +208,13 @@ async def region_top10(db: AsyncSession) -> dict:
             for position, row in enumerate(ranked, 1)
         ],
     }
+
+
+async def region_top10(db: AsyncSession) -> dict:
+    """The first 10 rows of the regional ranking."""
+    return leaderboard_payload((await regional_ranking(db))[:TOP_N])
+
+
+async def region_scores(db: AsyncSession) -> dict:
+    """Every eligible ALC with its regional rank and score (same values as the Top 10)."""
+    return leaderboard_payload(await regional_ranking(db))

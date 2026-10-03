@@ -3,7 +3,7 @@ import { Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tool
 import { api } from '../lib/api'
 import { CHART_AXIS, CHART_GRID, CHART_PRIMARY, statusChartColor } from '../lib/theme'
 import { ErrorState, formatNumber, Loading, MetricCard, PageHeader } from '../components/ui'
-import { RegionTop10, RegionTop10ScoreReference } from '../components/leaderboard'
+import { AllRegionScores, RegionTop10, RegionTop10ScoreReference } from '../components/leaderboard'
 
 interface AdminData { total_alcs: number; active_alcs: number; activities_submitted: number; pending_verification: number; verified_activities: number; correction_required: number; rejected_activities: number; verified_learners: number; verified_leads: number; verified_admissions: number; active_partnerships: number; status_distribution: {name:string;value:number}[]; submission_trend:{date:string;count:number}[] }
 export default function AdminDashboard() {
@@ -13,6 +13,7 @@ export default function AdminDashboard() {
   return <><PageHeader title="Administration Overview" description="System-wide performance. Outcome metrics include verified activities only."/><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">{cards.map(([label,value]) => <MetricCard key={label} label={label} value={value} hint={label.startsWith('Verified') ? 'Verified data only' : undefined}/>)}</div>
     <div className="mt-6 grid gap-6 xl:grid-cols-[1.4fr_1fr]"><section className="panel p-5"><h2 className="font-bold text-navy">Activity submissions over time</h2><p className="mb-4 text-xs text-slate-500">Last 30 activity dates</p><div className="h-72"><ResponsiveContainer width="100%" height="100%"><LineChart data={data.submission_trend}><XAxis dataKey="date" tick={{fontSize:11,fill:CHART_AXIS}} stroke={CHART_GRID}/><YAxis allowDecimals={false} tick={{fill:CHART_AXIS}} stroke={CHART_GRID}/><Tooltip/><Line dataKey="count" stroke={CHART_PRIMARY} strokeWidth={2} dot={false}/></LineChart></ResponsiveContainer></div></section><section className="panel p-5"><h2 className="font-bold text-navy">Verification status</h2><p className="mb-4 text-xs text-slate-500">All recorded activities</p><div className="h-72"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={data.status_distribution} dataKey="value" nameKey="name" innerRadius={50} outerRadius={90}>{data.status_distribution.map(s => <Cell key={s.name} fill={statusChartColor(s.name)} stroke="#fff" strokeWidth={2}/>)}</Pie><Tooltip/><Legend iconType="circle" iconSize={8} wrapperStyle={{fontSize:12}} formatter={v => <span className="text-ink">{v}</span>}/></PieChart></ResponsiveContainer></div></section></div>
     <RegionTop10/>
+    <AllRegionScores/>
     <RegionTop10ScoreReference/>
   </>
 }

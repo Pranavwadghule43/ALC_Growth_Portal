@@ -487,3 +487,123 @@ def test_query_preaggregates_before_joining():
     sql = str(leaderboard.regional_metrics_query())
     assert sql.count("GROUP BY") == 2  # one per pre-aggregated subquery, none outside
     assert "verified_activity" in sql and "active_partners" in sql
+
+
+# --------------------------------------------------------------------------- #
+# Regional score directory (GET /api/leaderboard/region-scores)
+# --------------------------------------------------------------------------- #
+SCORES_URL = "/api/leaderboard/region-scores"
+
+
+async def fetch_scores(client):
+    response = await client.get(SCORES_URL)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def test_region_scores_unauthenticated_is_401(client, world):
+    assert (await client.get(SCORES_URL)).status_code == 401
+
+
+async def test_region_scores_same_for_every_role(client, session, world):
+    await _region(session, world["sbu4"].id, 12)
+    results = []
+    for identifier, password, portal in ROLES:
+        await as_user(client, identifier, password, portal)
+        payload = await fetch_scores(client)
+        assert payload["period"] == "LIFETIME" and payload["generated_at"]
+        results.append(payload["items"])
+    assert all(items == results[0] for items in results)
+
+
+async def test_region_scores_must_change_password_is_denied(client, session, world):
+    user = await session.scalar(select(User).where(User.username == "sbu-4"))
+    user.must_change_password = True
+    await session.commit()
+    client.cookies.clear()
+    assert (await login(client, "sbu-4", "StrongSbuPass4!", "PORTAL")).status_code == 200
+    response = await client.get(SCORES_URL)
+    assert response.status_code == 403 and "Password change required" in response.text
+
+
+async def test_region_scores_lists_every_eligible_alc_in_regional_order(client, session, world):
+    await _region(session, world["sbu4"].id, 12)
+    await as_user(client, "admin", "StrongAdminPass!", "ADMIN")
+    items = (await fetch_scores(client))["items"]
+    assert [i["rank"] for i in items] == list(range(1, 13))
+    assert [i["alc_code"] for i in items] == [f"0007{i:04d}" for i in range(12, 0, -1)]
+    assert set(items[0]) == ITEM_KEYS
+
+
+async def test_top10_is_exactly_the_first_ten_region_scores(client, session, world):
+    await _region(session, world["sbu4"].id, 12)
+    session.add(partner(world["alc_b"].id))  # a different SBU, ranked in the same population
+    await session.commit()
+    await as_user(client, "00010001", "StrongAlcPassA!")
+    top = (await fetch(client))["items"]
+    scores = (await fetch_scores(client))["items"]
+    assert len(scores) == 13 and len(top) == 10
+    assert top == scores[:10]  # same ranks, scores and metrics
+
+
+async def test_region_scores_keep_eligibility_exclusions(session, world):
+    await add_scored_alc(session, "00030001", world["sbu4"].id, leads=10, done=1)
+    await add_alc(session, "00030002", world["sbu4"].id)  # all four metrics zero
+    await add_scored_alc(session, "00030003", world["sbu4"].id, leads=5, done=1)
+    session.add(activity((await add_alc(session, "00030004", world["sbu4"].id,
+                                         status=AlcStatus.INACTIVE)).id, leads=99))
+    await _branch(session, "0011", sbu_active=False)
+    await _branch(session, "0012", dcu_active=False)
+    await _branch(session, "0013", rcu_active=False)
+    await session.commit()
+    items = (await leaderboard.region_scores(session))["items"]
+    assert [i["alc_code"] for i in items] == ["00030001", "00030003"]
+
+
+async def test_filtering_by_dcu_never_rescores_or_reranks(session, world):
+    # ALC A sits in DCU Nashik, ALC B in another active DCU of another active RCU branch.
+    a = await add_scored_alc(session, "00020001", world["sbu4"].id, leads=10, admissions=1,
+                             done=1, partners=1)
+    await _branch(session, "0021")  # leads 50, admissions 5, done 2, partners 3
+    await add_scored_alc(session, "00020003", world["sbu4"].id, leads=30, done=3)
+    await session.commit()
+    full = (await leaderboard.region_scores(session))["items"]
+    regional = {i["alc_code"]: (i["rank"], i["score"]) for i in full}
+    # What a DCU Nashik filter shows: the same rows, with their regional rank and score.
+    nashik = [i for i in full if i["dcu"]["code"] == "DCU_NASHIK"]
+    assert {i["alc_code"] for i in nashik} == {"00020001", "00020003"}
+    for item in nashik:
+        assert (item["rank"], item["score"]) == regional[item["alc_code"]]
+    assert regional["00020001"][0] == 3  # not renumbered to a DCU-local rank
+    # Re-normalising only the DCU subset would give a different score, which never happens.
+    subset = [r for r in await leaderboard.eligible_rows(session) if r.dcu_code == "DCU_NASHIK"]
+    subset_score = {r.alc_code: display_score(r.score) for r in score_rows(subset)}
+    assert subset_score[a.alc_code] != regional[a.alc_code][1]
+
+
+async def test_one_scoring_source_for_both_endpoints(session, world, monkeypatch):
+    await _region(session, world["sbu4"].id, 12)
+    calls = []
+    original = leaderboard.score_rows
+
+    def spy(rows):
+        calls.append(len(rows))
+        return original(rows)
+
+    monkeypatch.setattr(leaderboard, "score_rows", spy)
+    top = await leaderboard.region_top10(session)
+    scores = await leaderboard.region_scores(session)
+    assert calls == [12, 12]  # both score the full eligible population, the same way
+    assert top["items"] == scores["items"][:10]
+
+
+async def test_region_scores_single_statement_regardless_of_volume(session, world):
+    await _grow(session, world["sbu4"].id, "0006", alcs=3, activities=2, partners=1)
+    with StatementLog(session) as small, ActivityLoads() as loads:
+        await leaderboard.region_scores(session)
+    await _grow(session, world["sbu4"].id, "0005", alcs=25, activities=6, partners=4)
+    with StatementLog(session) as large:
+        payload = await leaderboard.region_scores(session)
+    assert len(small.statements) == len(large.statements) == 1
+    assert loads.count == 0
+    assert len(payload["items"]) == 28

@@ -1,4 +1,5 @@
-"""Regional leaderboards readable by every operational role (ADMIN, DCU, SBU, ALC).
+"""Regional leaderboards readable by every operational role (ADMIN, DCU, SBU, ALC):
+the Region Top 10 and the complete regional score directory.
 
 These endpoints are intentionally *not* scoped to the caller's hierarchy: every role sees the
 same regional result. They grant no other access — ``/admin`` and ``/portal`` keep their own
@@ -24,3 +25,12 @@ async def region_top10(
 ):
     """Top 10 ACTIVE ALCs under an active SBU / DCU / RCU, by lifetime verified performance."""
     return await leaderboard.region_top10(db)
+
+
+@router.get("/region-scores")
+async def region_scores(
+    _: User = Depends(require_operational_user), db: AsyncSession = Depends(get_db)
+):
+    """Every eligible ALC with its regional rank and score, from the same ranking as the Top
+    10. Not filtered or re-scored by the caller's scope; the UI filters rows only."""
+    return await leaderboard.region_scores(db)
