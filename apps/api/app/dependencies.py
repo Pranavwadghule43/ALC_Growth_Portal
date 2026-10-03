@@ -119,6 +119,16 @@ async def require_portal_user(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+async def require_operational_user(user: User = Depends(get_current_user)) -> User:
+    """ADMIN, or a DCU / SBU / ALC login carrying its scope key. Only for explicitly regional
+    read-only endpoints (the Region Top 10); it grants no data scope of its own."""
+    if user.role != Role.ADMIN and not has_scope_key(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    if user.must_change_password:
+        raise HTTPException(status_code=403, detail="Password change required")
+    return user
+
+
 async def require_supervisor(user: User = Depends(get_current_user)) -> User:
     """DCU or SBU with its scope key: the roles that supervise many ALCs (review queue, ALC
     directory, password resets). Data reach is still bounded by ``services.scope``."""

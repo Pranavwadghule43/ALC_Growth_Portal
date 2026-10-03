@@ -4,6 +4,7 @@ import { ChevronRight } from 'lucide-react'
 import { api } from '../lib/api'
 import type { ActivityListItem, SbuStats, UnitRef } from '../types'
 import { Badge, ErrorState, formatDate, formatNumber, Loading, MetricCard, PageHeader } from '../components/ui'
+import { RegionTop10, RegionTop10ScoreReference } from '../components/leaderboard'
 
 interface DcuDash extends Omit<SbuStats, 'alcs'> {
   role: string; unit: (UnitRef & { type: string }) | null; sbus: number; assigned_alcs: number
@@ -56,5 +57,7 @@ export default function DcuDashboard() {
     <section><div className="mb-3 flex items-center justify-between"><h2 className="font-bold text-navy">Recent activity</h2><Link className="text-sm font-semibold text-teal" to="/portal/activities">Activity monitoring</Link></div>
       <div className="table-wrap"><table><thead><tr><th>Activity</th><th>ALC</th><th>SBU</th><th>Activity date</th><th>Status</th></tr></thead><tbody>{data.recent_activities.length ? data.recent_activities.map(({ activity: a, alc, sbu_code }) => <tr key={a.id}><td><Link to={`/portal/activities/${a.id}`} className="font-semibold text-navy hover:text-teal">{a.activity_number}</Link><p className="text-xs text-slate-500">{a.activity_type}</p></td><td><Link to={`/portal/alcs/${alc.id}`} className="hover:text-teal">{alc.alc_code}</Link><p className="text-xs text-slate-500">{alc.alc_name}</p></td><td>{sbu_code ?? '—'}</td><td>{formatDate(a.activity_date)}</td><td><Badge status={a.status} /></td></tr>) : <tr><td colSpan={5} className="p-5 text-sm text-slate-500">No submitted activities yet.</td></tr>}</tbody></table></div>
     </section>
+    <RegionTop10 />
+    <RegionTop10ScoreReference />
   </>
 }

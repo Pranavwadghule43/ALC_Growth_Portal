@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
-from app.routes import admin, auth, portal
+from app.routes import admin, auth, leaderboard, portal
 
 structlog.configure(
     processors=[structlog.processors.TimeStamper(fmt="iso"), structlog.processors.JSONRenderer()]
@@ -114,3 +114,4 @@ async def health():
 app.include_router(auth.router, prefix="/api")
 app.include_router(portal.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(leaderboard.router, prefix="/api")
