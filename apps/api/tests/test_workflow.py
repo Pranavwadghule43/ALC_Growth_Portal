@@ -158,8 +158,8 @@ async def test_upload_validation_and_verified_metrics(client, monkeypatch):
     async def upload(key, body, content_type):
         stored[key] = (body, content_type)
 
-    async def secure_url(key):
-        return f"https://private.example/{key}"
+    async def secure_url(key):  # browsers never receive a storage (presigned) URL
+        raise AssertionError("evidence access must not presign a storage URL")
 
     monkeypatch.setattr(portal_routes.storage_service, "upload", upload)
     monkeypatch.setattr(portal_routes.storage_service, "get_secure_url", secure_url)
@@ -178,7 +178,9 @@ async def test_upload_validation_and_verified_metrics(client, monkeypatch):
     assert good.status_code == 201 and len(stored) == 1
     evidence_id = good.json()[0]["id"]
     access = await client.get(f"/api/portal/evidence/{evidence_id}/access")
-    assert access.status_code == 200 and access.json()["url"].startswith("https://private.example/")
+    # The application content route, not a storage URL: storage stays private.
+    assert access.status_code == 200
+    assert access.json() == {"url": f"/api/portal/evidence/{evidence_id}/content"}
     assert (await client.post(f"/api/portal/activities/{activity['id']}/submit")).status_code == 200
     assert (await client.get("/api/portal/dashboard")).json()["learners"] == 0
     client.cookies.clear()

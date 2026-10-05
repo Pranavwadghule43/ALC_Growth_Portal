@@ -9,7 +9,7 @@ called out in the isolation requirement:
   "see all";
 * pagination / search / filter must stay inside the SBU scope;
 * direct-ID access to another SBU's ALC, activity, evidence (metadata,
-  presigned access *and* raw content) and password reset must 404;
+  access check *and* raw content) and password reset must 404;
 * ADMIN keeps global visibility and ALC keeps single-centre isolation.
 
 The ``seeded`` fixture assigns Centre A + Centre C to SBU 4 and Centre B to
@@ -27,6 +27,7 @@ from app.enums import Role
 from app.models import ALC, DCU, SBU, ActivityEvidence, User
 from app.services.hierarchy import ensure_hierarchy
 from tests.conftest import login
+from tests.evidence_storage import MemoryStorage
 
 payload = {
     "activity_type": "Partner meeting",
@@ -185,15 +186,16 @@ async def test_cross_sbu_direct_id_is_not_found(client, session, seeded):
     ).status_code == 404
 
 
-# --- Raw evidence content is scoped, not just the presigned link ----------- #
+# --- Raw evidence content is scoped, not just the access check ------------- #
 @pytest.mark.asyncio
-async def test_evidence_content_scoped_for_sbu(client, session):
+async def test_evidence_content_scoped_for_sbu(client, session, monkeypatch):
+    MemoryStorage(monkeypatch)  # empty private storage: no object was ever uploaded
     activity_a, ev_a = await alc_submit(client, session, "00010001", "StrongAlcPassA!", "alc-a")
     _, ev_b = await alc_submit(client, session, "00010002", "StrongAlcPassB!", "alc-b")
 
     await login(client, "sbu-4", "StrongSbuPass4!", "SBU")
-    # Own centre's evidence authorizes, but its backing file was never written to local
-    # storage, so a missing file returns a clean 404 rather than escaping as a 500.
+    # Own centre's evidence authorizes, but its backing object was never written to
+    # storage, so a missing object returns a clean 404 rather than escaping as a 500.
     assert (await client.get(f"/api/portal/evidence/{ev_a.id}/content")).status_code == 404
     # Another SBU's evidence content is authorization-blocked as 404 before any file access.
     assert (await client.get(f"/api/portal/evidence/{ev_b.id}/content")).status_code == 404

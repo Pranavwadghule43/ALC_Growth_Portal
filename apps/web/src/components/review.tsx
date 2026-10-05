@@ -31,14 +31,23 @@ export function ActivityDetails({ activity: a }: { activity: Activity }) {
   </section>
 }
 
+// The file is always loaded from the application API (``.../evidence/<id>/content``) with the
+// normal session cookies, never from object storage: the access check returns that URL.
+async function evidenceUrl(accessPath: string) {
+  const url = api.appUrl((await api.get<{ url: string }>(accessPath)).url)
+  if (!url) throw new Error('Evidence unavailable')
+  return url
+}
+
 function EvidenceCard({ evidence, accessPath, onPreview, tag }: { evidence: Evidence; accessPath: (id: string) => string; onPreview: (url: string, name: string) => void; tag?: string }) {
   const isPdf = evidence.mime_type === 'application/pdf'
-  const { data, isError } = useQuery({ queryKey: ['evidence-url', accessPath(evidence.id)], queryFn: () => api.get<{ url: string }>(accessPath(evidence.id)) })
-  const url = data?.url
+  const { data, isError } = useQuery({ queryKey: ['evidence-url', accessPath(evidence.id)], queryFn: () => evidenceUrl(accessPath(evidence.id)) })
+  const [failed, setFailed] = useState(false)  // the file itself could not be loaded
+  const url = failed ? undefined : data
   function open() { if (!url) return; if (isPdf) window.open(url, '_blank', 'noopener,noreferrer'); else onPreview(url, evidence.original_filename) }
   return <button onClick={open} disabled={!url} title={isPdf ? 'Open PDF in a new tab' : 'Preview image'} className="group flex flex-col overflow-hidden rounded-md border text-left hover:border-teal disabled:cursor-wait">
-    <div className="flex h-32 items-center justify-center bg-slate-50">{isPdf ? <FileText className="h-9 w-9 text-red-700" /> : url ? <img src={url} alt={evidence.original_filename} className="h-full w-full object-cover" /> : <ImageIcon className="h-8 w-8 text-teal" />}</div>
-    <span className="min-w-0 p-3">{tag && <span className="mb-1 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-900">{tag}</span>}<b className="block truncate text-sm">{evidence.original_filename}</b><small className="text-slate-500">{isError ? 'Unavailable' : `${isPdf ? 'PDF · opens in new tab' : 'Image · click to preview'} · ${(evidence.file_size / 1024 / 1024).toFixed(1)} MB`}</small></span>
+    <div className="flex h-32 items-center justify-center bg-slate-50">{isPdf ? <FileText className="h-9 w-9 text-red-700" /> : url ? <img src={url} alt={evidence.original_filename} onError={() => setFailed(true)} className="h-full w-full object-cover" /> : <ImageIcon className="h-8 w-8 text-teal" />}</div>
+    <span className="min-w-0 p-3">{tag && <span className="mb-1 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-900">{tag}</span>}<b className="block truncate text-sm">{evidence.original_filename}</b><small className="text-slate-500">{isError || failed ? 'Unavailable' : `${isPdf ? 'PDF · opens in new tab' : 'Image · click to preview'} · ${(evidence.file_size / 1024 / 1024).toFixed(1)} MB`}</small></span>
   </button>
 }
 

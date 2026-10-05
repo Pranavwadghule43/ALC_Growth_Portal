@@ -1,4 +1,4 @@
-import { resolveApiUrl } from './apiUrl'
+import { applicationUrl, resolveApiUrl } from './apiUrl'
 
 const API_URL = resolveApiUrl(import.meta.env.VITE_API_URL, import.meta.env.DEV)
 
@@ -64,6 +64,8 @@ export const api = {
   patch: <T>(path: string, body: unknown) => request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
   downloadUrl: (path: string) => `${API_URL}${path}`,
+  // A root-relative application URL returned by the API (e.g. evidence content), or null.
+  appUrl: (path: string) => applicationUrl(path, API_URL, window.location.href),
   uploadEvidence: (path: string, file: File, onProgress: (percent: number) => void, retry = true): Promise<unknown> => new Promise((resolve, reject) => {
     const body = new FormData()
     body.append('files', file)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEV_API_URL, PRODUCTION_API_URL, productionApiUrlProblem, resolveApiUrl } from './apiUrl'
+import { applicationUrl, DEV_API_URL, PRODUCTION_API_URL, productionApiUrlProblem, resolveApiUrl } from './apiUrl'
 
 // The API base URL: development keeps the local backend, a production build is same-origin
 // (/api) and never silently points at localhost.
@@ -36,5 +36,32 @@ describe('productionApiUrlProblem', () => {
     ['api', 'same-origin path'],
   ])('rejects %s', (value, reason) => {
     expect(productionApiUrlProblem(value)).toContain(reason)
+  })
+})
+
+// Evidence (and any other application URL the API returns) always loads from the API's own
+// origin; storage or other absolute URLs are refused.
+describe('applicationUrl', () => {
+  const page = 'https://portal.example/portal/activities/1'
+  const path = '/api/portal/evidence/e1/content'
+
+  it('resolves on the portal origin in production (same-origin /api)', () => {
+    expect(applicationUrl(path, '/api', page)).toBe('https://portal.example/api/portal/evidence/e1/content')
+  })
+
+  it('resolves on the local backend in development', () => {
+    expect(applicationUrl(path, DEV_API_URL, 'http://localhost:5173/portal/activities/1')).toBe('http://localhost:8000/api/portal/evidence/e1/content')
+  })
+
+  it('refuses absolute, protocol-relative and storage URLs', () => {
+    for (const bad of [
+      'http://127.0.0.1:9000/alc-evidence/evidence/a.pdf',
+      'https://s3.amazonaws.com/alc-evidence/a.pdf?X-Amz-Signature=x',
+      '//evil.example/a.pdf',
+      '/\\evil.example/a.pdf',
+      'javascript:alert(1)',
+      'api/portal/evidence/e1/content',
+      '',
+    ]) expect(applicationUrl(bad, '/api', page)).toBeNull()
   })
 })

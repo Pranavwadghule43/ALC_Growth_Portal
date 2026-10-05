@@ -15,8 +15,8 @@ import pytest
 from sqlalchemy import select
 
 from app.models import ActivityRevision
-from app.routes import portal as portal_routes
 from tests.conftest import login
+from tests.evidence_storage import MemoryStorage
 from tests.test_dcu_hierarchy import NASHIK_ALC_SBU4, hier  # noqa: F401  (hierarchy fixture)
 from tests.test_dcu_hierarchy import PW as HIER_PW
 
@@ -44,26 +44,8 @@ NASHIK_ALC = (NASHIK_ALC_SBU4, HIER_PW, "ALC")
 
 @pytest.fixture
 def store(monkeypatch):
-    """In-memory evidence storage served through the local (authorised) content route."""
-    files: dict[str, bytes] = {}
-
-    async def upload(key, body, content_type):
-        files[key] = body
-
-    async def get(key):
-        if key not in files:
-            raise FileNotFoundError(key)
-        return files[key]
-
-    async def delete(key):
-        files.pop(key, None)
-
-    service = portal_routes.storage_service
-    monkeypatch.setattr(service, "upload", upload)
-    monkeypatch.setattr(service, "get", get)
-    monkeypatch.setattr(service, "delete", delete)
-    monkeypatch.setattr(portal_routes.settings, "storage_backend", "local")
-    return files
+    """In-memory evidence storage, streamed through the authorised content routes."""
+    return MemoryStorage(monkeypatch).files
 
 
 async def as_user(client, who):

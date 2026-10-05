@@ -102,7 +102,8 @@ export default function ActivityEditor(){
   }
   async function openEvidence(e:Evidence){
     setFormError('')
-    try{const {url}=await api.get<{url:string}>(`/portal/evidence/${e.id}/access`);window.open(url,'_blank','noopener,noreferrer')}
+    // Opened through the application API (authorized, session cookies), never from object storage.
+    try{const url=api.appUrl((await api.get<{url:string}>(`/portal/evidence/${e.id}/access`)).url);if(!url)throw new Error('Unable to open evidence');window.open(url,'_blank','noopener,noreferrer')}
     catch(err){setFormError(err instanceof Error?err.message:'Unable to open evidence')}
   }
   function confirmSubmit(v:FormValues){

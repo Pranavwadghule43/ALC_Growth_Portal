@@ -26,3 +26,17 @@ export function productionApiUrlProblem(configured: string | undefined): string 
   if (LOCAL_HOSTS.has(url.hostname) || url.hostname.endsWith('.localhost')) return 'VITE_API_URL must not point to localhost / 127.0.0.1 in a production build'
   return null
 }
+
+// The browser URL for an application path the API returns, such as the evidence content route
+// /api/portal/evidence/<id>/content: resolved on the API's origin (the portal itself in
+// production, the local backend in development). Only root-relative paths are accepted, so an
+// absolute or protocol-relative URL (for example an object-storage URL) is refused (null) and
+// the browser only ever loads evidence through the authenticated application API.
+export function applicationUrl(path: string, apiUrl: string, pageUrl: string): string | null {
+  if (!path.startsWith('/') || path.startsWith('//') || path.includes('\\')) return null
+  try {
+    const apiOrigin = new URL(apiUrl, pageUrl).origin
+    const url = new URL(path, apiOrigin)
+    return url.origin === apiOrigin ? url.href : null
+  } catch { return null }
+}

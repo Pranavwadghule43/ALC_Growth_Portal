@@ -40,7 +40,8 @@ activities of their assigned ALCs, and reset those ALC users' passwords.
 1. An ALC creates a draft with non-negative metrics and an activity date no later than today.
 2. Attach at least one JPG/JPEG, PNG, WEBP, or PDF (default limit 10 files, 10 MB each). The
    API checks extension, declared MIME, and file signature; storage keys are generated
-   server-side. Evidence stays private, and access URLs are short-lived.
+   server-side. Evidence stays private: browsers open it only through the authenticated API
+   (see [Evidence delivery](#evidence-delivery-private-storage)).
 3. The ALC submits, which locks editing. An SBU (for its assigned ALCs) or an ADMIN reviews
    the queue, opens the private evidence, then **verifies**, **requests correction** (reason
    required), or **rejects** (reason required).
@@ -162,10 +163,10 @@ is set explicitly (environment variable or `.env`); built-in development default
 | `TRUSTED_PROXY_CIDRS` | Required. The reverse proxy address(es), normally `127.0.0.1/32`. Ranges broader than /8 (IPv4) or /32 (IPv6), such as `0.0.0.0/0`, are rejected. Uvicorn must run with `--no-proxy-headers`. |
 | `CORS_ORIGINS` | Empty for the same-origin deployment (recommended). Any listed origin must be an exact `https://` origin — no `*`, no localhost, no path. |
 | `STORAGE_BACKEND` | Must be `s3` (local disk storage is development-only). |
-| `S3_ENDPOINT_URL` | `http(s)://` URL of the private MinIO/S3-compatible endpoint, or empty for AWS S3. |
+| `S3_ENDPOINT_URL` | `http(s)://` URL of the private MinIO/S3-compatible endpoint, or empty for AWS S3. Server-side only: FastAPI connects to it (for example `http://127.0.0.1:9000`); browsers never do. |
 | `S3_REGION`, `S3_BUCKET` | Bucket is required (keep it private, no anonymous access). |
 | `S3_ACCESS_KEY`, `S3_SECRET_KEY` | Required, not `minioadmin`/placeholders; secret at least 16 characters. Use a least-privilege service account, not the MinIO root user. |
-| `S3_PRESIGN_SECONDS` | 1–3600 (default 300). |
+| `S3_PRESIGN_SECONDS` | 1–3600 (default 300). Evidence is not viewed through presigned URLs (it is streamed by the API). |
 | `LOGIN_IP_LIMIT`, `LOGIN_IP_WINDOW_SECONDS`, `LOGIN_PAIR_FAILURE_LIMIT`, `LOGIN_PAIR_FAILURE_WINDOW_SECONDS`, `LOGIN_FALLBACK_MAX_KEYS` | Login rate limiting (bounded in every environment). The window variable is `LOGIN_PAIR_FAILURE_WINDOW_SECONDS`; the misspelling `LOGIN_PAIR_WINDOW_SECONDS` is rejected in production. |
 | `MAX_UPLOAD_FILES`, `MAX_UPLOAD_BYTES`, `PASSWORD_HASH_CONCURRENCY` | Optional tuning (defaults 10, 10 MiB, 2). |
 | `VITE_API_URL` (frontend build) | `/api` for the same-origin deployment. A production build fails if it points to `http://`, localhost or `127.0.0.1`; if unset, a production build uses `/api` (development uses `http://localhost:8000/api`). |
@@ -181,6 +182,24 @@ Browser --HTTPS :443--> reverse proxy --+-- /       -> built React files (apps/w
                                         +-- /api/*  -> Uvicorn 127.0.0.1:8000 -> FastAPI
 FastAPI -> PostgreSQL (private/loopback), Redis (private/loopback), MinIO/S3 (private bucket)
 ```
+
+#### Evidence delivery (private storage)
+
+```text
+Browser --HTTPS (session cookies)--> reverse proxy --/api--> FastAPI --private connection--> MinIO/S3
+```
+
+- Object storage stays private: no public bucket, no anonymous access, and the MinIO/S3 port and
+  console are never exposed to users. `S3_ENDPOINT_URL` is used by FastAPI only.
+- Browsers open evidence through the authenticated API —
+  `GET /api/portal/evidence/{id}/content` (DCU / SBU / ALC) and
+  `GET /api/admin/evidence/{id}/content` (ADMIN). The API applies the same activity scope as the
+  rest of the portal (unauthorized or unknown evidence is `404`), then streams the object from
+  storage in chunks. The `.../access` check returns that application URL, never a storage URL.
+- Responses never include the bucket, object key, filesystem path or storage endpoint; they are
+  sent with `Cache-Control: private, no-store`.
+- The reverse proxy only has to expose the application over HTTPS (`/` and `/api`); it needs no
+  route to MinIO/S3.
 
 ```bash
 # Frontend (build once per release)
@@ -204,7 +223,7 @@ npm run lint
 npm run build
 ```
 
-The test suite uses isolated in-memory SQLite for fast security/workflow checks. Before public rollout, run a staging smoke test against real PostgreSQL and object storage, including upload, signed URL preview, and concurrent submissions.
+The test suite uses isolated in-memory SQLite for fast security/workflow checks. Before public rollout, run a staging smoke test against real PostgreSQL and object storage, including upload, evidence preview through the API, and concurrent submissions.
 
 ## Production deployment
 

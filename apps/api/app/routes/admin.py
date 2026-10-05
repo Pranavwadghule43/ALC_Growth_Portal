@@ -3,7 +3,7 @@ import uuid
 from datetime import date
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from sqlalchemy import (
     Date,
     and_,
@@ -78,6 +78,7 @@ from app.services.activity_lists import (
 )
 from app.services.audit import record_audit
 from app.services.csv_export import streaming_csv_response
+from app.services.evidence_delivery import content_path_for, evidence_response
 from app.services.evidence_history import evidence_viewable
 from app.services.hierarchy_reassignment import (
     alc_hierarchy,
@@ -89,7 +90,6 @@ from app.services.hierarchy_reassignment import (
 from app.services.rollups import alc_activity_join
 from app.services.scope import submitted_workflow
 from app.services.sessions import revoke_user_sessions
-from app.storage import storage_service
 
 router = APIRouter(prefix="/admin", tags=["Admin"], dependencies=[Depends(require_csrf)])
 
@@ -470,19 +470,16 @@ async def evidence_access(
     # Current evidence, or evidence removed after a reviewer saw it (review history).
     if not evidence or not await evidence_viewable(db, evidence):
         raise HTTPException(status_code=404, detail="Evidence not found")
-    if settings.storage_backend == "local":
-        return {"url": f"{str(request.base_url).rstrip('/')}/api/admin/evidence/{evidence_id}/content", "expires_in": 0}
-    return {"url": await storage_service.get_secure_url(evidence.storage_key), "expires_in": settings.s3_presign_seconds}
+    # The application content URL, never a storage URL: storage stays private.
+    return {"url": content_path_for("admin_evidence_content", evidence_id, request.app)}
 
 
-@router.get("/evidence/{evidence_id}/content")
+@router.get("/evidence/{evidence_id}/content", name="admin_evidence_content")
 async def evidence_content(
     evidence_id: uuid.UUID,
     _: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    if settings.storage_backend != "local":
-        raise HTTPException(status_code=404, detail="Evidence not found")
     evidence = await db.scalar(
         select(ActivityEvidence)
         .join(Activity)
@@ -494,11 +491,7 @@ async def evidence_content(
     # Current evidence, or evidence removed after a reviewer saw it (review history).
     if not evidence or not await evidence_viewable(db, evidence):
         raise HTTPException(status_code=404, detail="Evidence not found")
-    try:
-        content = await storage_service.get(evidence.storage_key)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Evidence not found") from None
-    return Response(content, media_type=evidence.mime_type, headers={"Cache-Control": "private, no-store"})
+    return await evidence_response(evidence)
 
 
 async def paged_alc_ids(

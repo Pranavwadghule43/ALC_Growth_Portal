@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -74,6 +74,7 @@ from app.services.activity_lists import (
 )
 from app.services.audit import record_audit
 from app.services.csv_export import safe_csv, streaming_csv_response
+from app.services.evidence_delivery import content_path_for, evidence_response
 from app.services.evidence_history import evidence_viewable, is_historical
 from app.services.rollups import (
     PENDING_STATUSES,
@@ -703,38 +704,22 @@ async def evidence_access(
     user: User = Depends(require_portal_user),
     db: AsyncSession = Depends(get_db),
 ):
-    evidence = await scoped_evidence(db, user, evidence_id, include_removed=True)
-    if settings.storage_backend == "local":
-        return {
-            "url": f"{str(request.base_url).rstrip('/')}/api/portal/evidence/{evidence_id}/content",
-            "expires_in": 0,
-        }
-    return {
-        "url": await storage_service.get_secure_url(evidence.storage_key),
-        "expires_in": settings.s3_presign_seconds,
-    }
+    """Authorized check before opening evidence. Returns the application content URL (root-
+    relative, on the API's origin) — never a storage URL, so storage stays private."""
+    await scoped_evidence(db, user, evidence_id, include_removed=True)
+    return {"url": content_path_for("portal_evidence_content", evidence_id, request.app)}
 
 
-@router.get("/evidence/{evidence_id}/content")
+@router.get("/evidence/{evidence_id}/content", name="portal_evidence_content")
 async def evidence_content(
     evidence_id: uuid.UUID,
     user: User = Depends(require_portal_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if settings.storage_backend != "local":
-        raise HTTPException(status_code=404, detail="Evidence not found")
-    # Authorize (DCU/SBU/ALC scoping) before touching the filesystem, then treat a
-    # missing local file as a 404 rather than letting FileNotFoundError escape as a 500.
+    # Authorize (DCU/SBU/ALC scoping; drafts only for their own ALC) before touching storage,
+    # then stream the private object through the API.
     evidence = await scoped_evidence(db, user, evidence_id, include_removed=True)
-    try:
-        content = await storage_service.get(evidence.storage_key)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Evidence not found") from None
-    return Response(
-        content,
-        media_type=evidence.mime_type,
-        headers={"Cache-Control": "private, no-store"},
-    )
+    return await evidence_response(evidence)
 
 
 # --------------------------------------------------------------------------- #
