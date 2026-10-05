@@ -43,11 +43,13 @@ import weakref
 from collections import OrderedDict
 from dataclasses import dataclass
 
+import structlog
 from fastapi import HTTPException, Request
 from redis.asyncio import Redis
 
 from app.config import settings
 
+log = structlog.get_logger("app.auth")
 THROTTLED_DETAIL = "Too many login attempts. Try again later."
 KEY_PREFIX = "login:v1"
 REDIS_RETRY_AFTER_FAILURE_SECONDS = 5.0  # skip Redis briefly after it fails (no stalls)
@@ -292,7 +294,9 @@ def local_backend() -> LocalBackend:
     return _local
 
 
-def _redis_backend() -> RedisBackend:
+def redis_client() -> Redis:
+    """The application's Redis client for the running event loop (short socket timeouts).
+    Also used by the readiness check, so there is one Redis configuration."""
     loop = asyncio.get_running_loop()
     client = _redis_clients.get(loop)
     if client is None:
@@ -303,7 +307,11 @@ def _redis_backend() -> RedisBackend:
             socket_timeout=0.5,
         )
         _redis_clients[loop] = client
-    return RedisBackend(client)
+    return client
+
+
+def _redis_backend() -> RedisBackend:
+    return RedisBackend(redis_client())
 
 
 async def _run(operation: str, *args):
@@ -351,6 +359,8 @@ async def begin_login_attempt(request: Request, scope: str, identifier: str) -> 
         "hit", ip_key(scope, ip), settings.login_ip_limit, settings.login_ip_window_seconds
     )
     if not hit.allowed:
+        # Operational event only: which limit and endpoint. Never the identifier.
+        log.warning("login_rate_limited", scope=scope, limit="client_ip")
         raise _throttled(hit.retry_after)
     pair = pair_key(scope, ip, identifier)
     reserved = await _run(
@@ -360,5 +370,6 @@ async def begin_login_attempt(request: Request, scope: str, identifier: str) -> 
         settings.login_pair_failure_window_seconds,
     )
     if not reserved.allowed:
+        log.warning("login_rate_limited", scope=scope, limit="client_ip_and_identifier")
         raise _throttled(reserved.retry_after)
     return LoginAttempt(scope, pair)

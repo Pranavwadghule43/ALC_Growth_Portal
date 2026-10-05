@@ -169,6 +169,7 @@ is set explicitly (environment variable or `.env`); built-in development default
 | `S3_PRESIGN_SECONDS` | 1–3600 (default 300). Evidence is not viewed through presigned URLs (it is streamed by the API). |
 | `LOGIN_IP_LIMIT`, `LOGIN_IP_WINDOW_SECONDS`, `LOGIN_PAIR_FAILURE_LIMIT`, `LOGIN_PAIR_FAILURE_WINDOW_SECONDS`, `LOGIN_FALLBACK_MAX_KEYS` | Login rate limiting (bounded in every environment). The window variable is `LOGIN_PAIR_FAILURE_WINDOW_SECONDS`; the misspelling `LOGIN_PAIR_WINDOW_SECONDS` is rejected in production. |
 | `MAX_UPLOAD_FILES`, `MAX_UPLOAD_BYTES`, `PASSWORD_HASH_CONCURRENCY` | Optional tuning (defaults 10, 10 MiB, 2). |
+| `LOG_LEVEL` | Optional. `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` (default `INFO`); any other value stops startup. Use `INFO` in production. The log **format** is chosen by `APP_ENV`, not by this variable. |
 | `VITE_API_URL` (frontend build) | `/api` for the same-origin deployment. A production build fails if it points to `http://`, localhost or `127.0.0.1`; if unset, a production build uses `/api` (development uses `http://localhost:8000/api`). |
 
 Never expose database, Redis, storage, or JWT secrets in `VITE_*` frontend variables. The storage adapter does not rely on a persistent local disk.
@@ -231,9 +232,62 @@ The test suite uses isolated in-memory SQLite for fast security/workflow checks.
 2. Deploy `apps/api` to a Python-capable host (for example Render, Fly.io, or a container platform) with HTTPS and environment variables above. Run `python -m alembic upgrade head` as a release migration, not from every web worker.
 3. Create the first admin using a strong environment-supplied password through the one-off `python -m scripts.create_admin` command. Import the real ALC master and create unique users through Admin → Users.
 4. Preferred: serve the built frontend and `/api` from one origin (see *Production startup model* above, `VITE_API_URL=/api`, `CORS_ORIGINS` empty). Alternative: deploy the repository root to Vercel using `vercel.json`. Set `VITE_API_URL=https://api.example.org/api` in Vercel and `CORS_ORIGINS=https://portal.example.org` on the API. Ensure both origins share a registrable domain for SameSite cookie behavior.
-5. Set every variable in *Production environment variables* (the API refuses to start otherwise). Configure health checks at `/api/health`. Review backups, retention, monitoring, error reporting, and provider quotas before launch.
+5. Set every variable in *Production environment variables* (the API refuses to start otherwise). Point uptime/monitoring checks at `/api/health/ready` and process-restart checks at `/api/health/live` (see *Health checks, request IDs and logging*). Review backups, retention, monitoring, error reporting, and provider quotas before launch.
 
 Do not point production at the sample CSV, development passwords, local database, or MinIO default credentials.
+
+### Health checks, request IDs and logging
+
+Two public, unauthenticated, read-only endpoints (no deployment or monitoring platform is
+configured by this repository):
+
+| Endpoint | Meaning | Result |
+| --- | --- | --- |
+| `GET /api/health/live` | **Liveness** — the API process is running and answering. It does not touch PostgreSQL, Redis or storage, so an outage of those never makes it fail. `GET /api/health` is kept as an alias. | Always `200` `{"status":"ok"}` while the process is up. |
+| `GET /api/health/ready` | **Readiness** — the API can serve normal traffic: PostgreSQL answers `SELECT 1`, Redis answers `PING`, and the evidence bucket answers `HeadBucket`. | `200` `{"status":"ready","checks":{"database":"ok","redis":"ok","storage":"ok"}}`, or `503` `{"status":"not_ready","checks":{…"error"…}}` when any check fails. |
+
+- Use **live** to decide "restart the process?" and **ready** to decide "send traffic / raise
+  an alert?". A process manager or reverse proxy may poll them; the reverse proxy only needs
+  to pass `/api/health/*` through like the rest of `/api/*`.
+- The responses are intentionally minimal: only the words `ok`, `error`, `ready` and
+  `not_ready`. They never contain the environment, a version, hosts, URLs, the bucket name,
+  credentials or error text. The reason for a failure is in the server log
+  (`readiness_check_failed` with the check name and the exception type).
+- Each check runs once per request with a 3 second limit: no retries, no caching, nothing is
+  written, uploaded, listed or deleted.
+- Redis: while Redis is down the login limiter keeps protecting logins from a bounded
+  in-process fallback, so the application is *degraded* but still usable. Readiness still
+  reports `"redis":"error"` and `503`, because Redis is a required production dependency.
+
+**Request ID.** Every response carries an `X-Request-ID` header (32 hex characters) generated
+by the server; an `X-Request-ID` sent by the client is ignored. The same value is on every
+log line written for that request, so a user can quote it and the matching log lines can be
+found. It is random and contains no user data.
+
+**Logging.** Logs go to stderr. With `APP_ENV=production` each line is one JSON object;
+in development and test the lines are human-readable. Each request produces one
+`request_completed` line:
+
+```json
+{"event":"request_completed","request_id":"…","method":"GET","path":"/api/portal/dashboard","status_code":200,"duration_ms":18.4,"client_ip":"203.0.113.7","user_id":"…","role":"ALC","level":"info","logger":"app.request","timestamp":"2026-10-05T06:35:26.464807Z"}
+```
+
+- Logged: request id, method, path **without the query string**, status, duration, client IP
+  (resolved with the `TRUSTED_PROXY_CIDRS` rules below) and, for signed-in requests, the user
+  id and role. Login events: `login_succeeded`, `login_failed`, `login_refused`,
+  `login_rate_limited`.
+- Never logged: passwords, the typed login identifier, cookies, JWTs, refresh or CSRF tokens,
+  the `Authorization` header, request or response bodies, uploaded files, query strings, or
+  any configuration secret/URL. Fields with sensitive names are replaced by `[REDACTED]` as a
+  safety net.
+- An unexpected error returns a generic `500` (`INTERNAL_ERROR`) with the `X-Request-ID`; the
+  exception class and stack trace are written to the server log only (`unhandled_error`).
+- This line replaces Uvicorn's own access log, which would print full URLs including query
+  strings. Successful health probes are logged at `DEBUG`, so they are hidden at the default
+  `INFO`; failed readiness is logged at `WARNING`.
+- `LOG_LEVEL=DEBUG` is for short investigations only. Third-party libraries (S3 client,
+  database drivers, HTTP clients) stay at `WARNING` even then, because their debug output can
+  contain signed headers, URLs and SQL values.
 
 ### Reverse proxy and client IP
 

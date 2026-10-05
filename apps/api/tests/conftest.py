@@ -1,3 +1,6 @@
+import io
+import json
+import logging
 import os
 
 os.environ.setdefault("APP_ENV", "test")
@@ -15,6 +18,7 @@ from app.database import Base, get_db
 from app.enums import Role
 from app.main import app
 from app.models import ALC, SBU, User
+from app.observability import build_formatter
 from app.services import login_limiter
 from app.services.hierarchy import ensure_hierarchy
 
@@ -123,3 +127,31 @@ async def login(client, identifier, password, portal):
         csrf = client.cookies.get("csrf_token")
         client.headers["X-CSRF-Token"] = csrf
     return response
+
+
+@pytest.fixture
+def logs():
+    """Everything logged during the test, rendered exactly as production renders it (JSON)."""
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(build_formatter(json_logs=True))
+    root = logging.getLogger()
+    previous = root.level
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG)
+
+    class Captured:
+        @property
+        def text(self) -> str:
+            return stream.getvalue()
+
+        @property
+        def events(self) -> list[dict]:
+            return [json.loads(line) for line in stream.getvalue().splitlines() if line.strip()]
+
+        def named(self, event: str) -> list[dict]:
+            return [entry for entry in self.events if entry.get("event") == event]
+
+    yield Captured()
+    root.removeHandler(handler)
+    root.setLevel(previous)

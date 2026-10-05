@@ -1,5 +1,5 @@
-import logging
 import math
+from contextlib import asynccontextmanager
 from typing import Any
 
 import structlog
@@ -11,12 +11,31 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
-from app.routes import admin, auth, leaderboard, portal
-
-structlog.configure(
-    processors=[structlog.processors.TimeStamper(fmt="iso"), structlog.processors.JSONRenderer()]
+from app.observability import (
+    REQUEST_ID_HEADER,
+    RequestContextMiddleware,
+    configure_logging,
+    mark_logged,
+    was_logged,
 )
-logging.basicConfig(level=logging.INFO)
+from app.routes import admin, auth, health, leaderboard, portal
+
+# JSON lines in production, readable lines in development/test; level from LOG_LEVEL.
+configure_logging(settings.app_env, settings.log_level)
+log = structlog.get_logger("app.lifecycle")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # Names of what is configured only: never URLs, credentials or the environment itself.
+    log.info(
+        "application_started", app_env=settings.app_env, log_level=settings.log_level,
+        storage_backend=settings.storage_backend,
+        trusted_proxies_configured=bool(settings.trusted_proxy_networks),
+    )
+    yield
+    log.info("application_stopped")
+
 
 # Production configuration is validated when ``app.config.settings`` is created (see
 # ``app.config.validate_settings``): an unsafe production setup never reaches this point.
@@ -28,6 +47,7 @@ app = FastAPI(
     docs_url=None if _production else "/docs",
     redoc_url=None if _production else "/redoc",
     openapi_url=None if _production else "/openapi.json",
+    lifespan=lifespan,
 )
 app.add_middleware(
     CORSMiddleware,
@@ -35,6 +55,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "X-CSRF-Token"],
+    expose_headers=[REQUEST_ID_HEADER],
 )
 
 
@@ -51,6 +72,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(SecurityHeadersMiddleware)
+# Added last = outermost: request id, request log and the safety net for unexpected errors.
+app.add_middleware(RequestContextMiddleware)
 
 
 def _json_safe(value: Any) -> Any:
@@ -99,18 +122,21 @@ async def validation_error(_: Request, exc: RequestValidationError):
 
 @app.exception_handler(Exception)
 async def unhandled_error(request: Request, exc: Exception):
-    structlog.get_logger().exception("unhandled_error", path=request.url.path, error=str(exc))
+    # Normally RequestContextMiddleware has already logged the error and answered; this
+    # covers anything that fails outside it. The exception type and stack trace go to the
+    # server log, never to the client.
+    if not was_logged(exc):
+        mark_logged(exc)
+        structlog.get_logger("app.request").error(
+            "unhandled_error", error_type=type(exc).__name__, path=request.url.path, exc_info=exc
+        )
     return JSONResponse(
         status_code=500,
         content={"error": {"code": "INTERNAL_ERROR", "message": "An unexpected error occurred"}},
     )
 
 
-@app.get("/api/health")
-async def health():
-    return {"status": "ok"}
-
-
+app.include_router(health.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(portal.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")

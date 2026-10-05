@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+import structlog
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,11 +25,13 @@ from app.dependencies import (
 )
 from app.enums import Role
 from app.models import ALC, RefreshToken, User
+from app.observability import set_actor
 from app.schemas import ChangePasswordIn, LoginIn, UserOut
 from app.services.audit import record_audit
 from app.services.login_limiter import begin_login_attempt
 from app.services.sessions import claim_refresh_token, revoke_user_sessions
 
+log = structlog.get_logger("app.auth")
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
@@ -68,6 +71,13 @@ async def _establish_session(
     await record_audit(db, action, "user", user.id, user, request)
     await db.commit()
     set_auth_cookies(response, create_access_token(user.id), raw_refresh, new_csrf_token())
+    # Operational log: who signed in (internal id and role). Never the identifier typed,
+    # the password, or any token.
+    set_actor(request, user.id, user.role)
+    log.info(
+        "login_succeeded", kind=action, user_id=str(user.id), role=user.role.value,
+        change_required=bool(user.must_change_password),  # a flag, not a credential
+    )
     return user
 
 
@@ -106,6 +116,7 @@ async def login(
     password_ok = await verify_password_async(payload.password, login_password_hash(user))
     if not user or not user.is_active or not password_ok:
         await record_audit(db, "login_failed", "user", request=request)
+        log.info("login_failed", scope="portal")  # no identifier: it may be a real username
         await db.commit()
         raise HTTPException(
             status_code=401, detail="Invalid username/ALC code or password"
@@ -113,6 +124,8 @@ async def login(
     # Inactive ALC, or a DCU login not linked to exactly one active DCU: no session.
     if not account_available(user):
         await attempt.credentials_valid()  # right password: not a credential failure
+        log.info("login_refused", scope="portal", reason="account_unavailable",
+                 user_id=str(user.id), role=user.role.value)
         raise HTTPException(status_code=401, detail="Account unavailable")
     await attempt.succeeded()
     return await _establish_session(user, request, response, db)
@@ -143,6 +156,7 @@ async def admin_login(
     password_ok = await verify_password_async(payload.password, login_password_hash(user))
     if not user or not user.is_active or not password_ok:
         await record_audit(db, "admin_login_failed", "user", request=request)
+        log.info("login_failed", scope="admin")
         await db.commit()
         raise HTTPException(status_code=401, detail="Invalid username or password")
     await attempt.succeeded()

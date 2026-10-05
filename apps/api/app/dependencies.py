@@ -8,6 +8,7 @@ from app.auth import decode_access_token
 from app.database import get_db
 from app.enums import AlcStatus, Role
 from app.models import ALC, DCU, SBU, User
+from app.observability import set_actor
 from app.services.scope import SUPERVISOR_ROLES, has_scope_key
 
 # Eager-load every relationship the ``UserOut`` response schema serializes, including
@@ -46,6 +47,7 @@ async def load_user_for_response(db: AsyncSession, user_id) -> User | None:
 
 
 async def get_current_user(
+    request: Request,
     access_token: str | None = Cookie(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> User:
@@ -62,6 +64,7 @@ async def get_current_user(
     user = await db.scalar(select(User).options(*AUTH_USER_LOADERS).where(User.id == user_id))
     if not user or not account_available(user):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account unavailable")
+    set_actor(request, user.id, user.role)  # request log: user id and role only
     return user
 
 

@@ -18,6 +18,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
 APP_ENVIRONMENTS = ("development", "test", "production")
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 STORAGE_BACKENDS = ("s3", "local")
 
 
@@ -28,6 +29,9 @@ class ConfigurationError(RuntimeError):
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=("../../.env", ".env"), extra="ignore")
     app_env: str = "development"
+    # Minimum level written to the log. INFO in every environment unless set explicitly;
+    # DEBUG is never enabled automatically.
+    log_level: str = "INFO"
     secret_key: str = "development-only-change-me-please-32-chars"
     database_url: str = "postgresql+asyncpg://alc:alc_dev_password@localhost:5432/alc_growth"
     redis_url: str = "redis://localhost:6379/0"
@@ -72,6 +76,14 @@ class Settings(BaseSettings):
         value = value.strip()
         if value not in APP_ENVIRONMENTS:
             raise ValueError(f"APP_ENV must be one of: {', '.join(APP_ENVIRONMENTS)}")
+        return value
+
+    @field_validator("log_level")
+    @classmethod
+    def _known_log_level(cls, value: str) -> str:
+        value = value.strip().upper()
+        if value not in LOG_LEVELS:
+            raise ValueError(f"LOG_LEVEL must be one of: {', '.join(LOG_LEVELS)}")
         return value
 
     @field_validator("storage_backend")

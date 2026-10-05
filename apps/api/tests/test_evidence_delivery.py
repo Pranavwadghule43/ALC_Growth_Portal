@@ -235,7 +235,8 @@ async def test_missing_metadata_is_not_found(client, world, storage):
 
 
 @pytest.mark.asyncio
-async def test_missing_object_is_not_found_without_details(client, world, storage, capsys):
+async def test_missing_object_is_not_found_without_details(client, world, storage, logs):
+    keys = tuple(storage.files)
     storage.files.clear()
     for who, prefix in ((ALC_A, "portal"), (ADMIN, "admin")):
         await as_user(client, who)
@@ -243,14 +244,15 @@ async def test_missing_object_is_not_found_without_details(client, world, storag
         assert response.status_code == 404
         assert response.json() == {"detail": "Evidence not found"}
         assert "evidence/" not in response.text
-    log = capsys.readouterr().out
-    assert "evidence_object_missing" in log and world["pdf"] in log
-    assert "evidence/" not in log  # the object key is not logged
+    events = logs.named("evidence_object_missing")
+    assert len(events) == 2
+    assert all(event["evidence_id"] == world["pdf"] for event in events)
+    assert all(key not in logs.text for key in keys)
 
 
 @pytest.mark.asyncio
 async def test_storage_failure_is_503_without_leaking_storage_details(
-    client, world, storage, capsys
+    client, world, storage, logs
 ):
     key = next(iter(storage.files))
     storage.open_error = EndpointConnectionError(
@@ -261,9 +263,12 @@ async def test_storage_failure_is_503_without_leaking_storage_details(
     assert response.status_code == 503
     assert response.json() == {"detail": "Evidence is temporarily unavailable"}
     assert_no_storage_details(response, storage)
-    log = capsys.readouterr().out
-    assert "evidence_storage_unavailable" in log and "EndpointConnectionError" in log
-    assert "127.0.0.1" not in log and key not in log
+    [event] = logs.named("evidence_storage_unavailable")
+    assert event["evidence_id"] == world["pdf"]
+    assert event["error_type"] == "EndpointConnectionError"
+    event_text = str(event)
+    assert "127.0.0.1" not in event_text
+    assert key not in event_text
 
 
 @pytest.mark.asyncio

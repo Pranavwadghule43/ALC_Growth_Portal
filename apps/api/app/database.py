@@ -22,7 +22,11 @@ class Base(DeclarativeBase):
 pool_options = (
     {"pool_size": 10, "max_overflow": 20} if settings.database_url.startswith("postgresql") else {}
 )
-engine = create_async_engine(settings.database_url, pool_pre_ping=True, **pool_options)
+# hide_parameters: SQL errors (and their log lines) never include bound values such as
+# password hashes, e-mail addresses or user-entered text.
+engine = create_async_engine(
+    settings.database_url, pool_pre_ping=True, hide_parameters=True, **pool_options
+)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 
