@@ -1,0 +1,24 @@
+# SAMPLE ONLY — not installed by the repository. Copy to /etc/systemd/system/, adapt the paths
+# and user, then: systemctl daemon-reload && systemctl enable --now alc-growth-backup.timer
+[Unit]
+Description=ALC Growth Portal backup (PostgreSQL dump + evidence copy + retention)
+Wants=network-online.target
+After=network-online.target postgresql.service minio.service
+
+[Service]
+Type=oneshot
+User=alc-backup
+Group=alc-backup
+# KEY=VALUE file, mode 0600 (see backup.env.example); holds no PostgreSQL password —
+# that comes from the PGPASSFILE it names.
+EnvironmentFile=/etc/alc-growth/backup.env
+ExecStart=/opt/alc-growth/apps/api/scripts/backup/backup.sh
+ExecStart=/opt/alc-growth/apps/api/scripts/backup/retention.sh --apply
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/alc-growth/backups

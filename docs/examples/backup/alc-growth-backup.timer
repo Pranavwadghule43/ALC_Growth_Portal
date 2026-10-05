@@ -1,0 +1,11 @@
+# SAMPLE ONLY — not installed by the repository.
+[Unit]
+Description=Nightly ALC Growth Portal backup
+
+[Timer]
+OnCalendar=*-*-* 02:15:00
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
