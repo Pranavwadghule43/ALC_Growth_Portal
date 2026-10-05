@@ -135,22 +135,62 @@ Email, Area Type, RCU, or DCU); `SBU` handling and the admin upload UI are still
 
 ## Environment variables
 
-See `.env.example` for all defaults. Important production variables:
+`.env.example` holds the **development** defaults; `.env.production.example` is the production
+template (placeholders only — never commit real values). The API reads its variables from the
+process environment or a `.env` file; the frontend reads `VITE_*` variables at build time.
 
-| Variable | Purpose |
+`APP_ENV` must be exactly `development`, `test` or `production`. Any other value (including a
+typo such as `prodution` or `Production`) stops the API at startup instead of silently running
+as development. `STORAGE_BACKEND` must be `s3` or `local` in every environment.
+
+### Production environment variables
+
+With `APP_ENV=production` the API validates its whole critical configuration before it starts.
+Anything missing, left at a development default, a placeholder (`change-me`, `example`,
+`minioadmin`, …) or otherwise unsafe stops startup with a `ConfigurationError` that lists the
+offending **keys** — secret values are never printed. A value counts as configured only when it
+is set explicitly (environment variable or `.env`); built-in development defaults never pass.
+
+| Variable | Production rule |
 | --- | --- |
-| `APP_ENV=production` | Disables API docs and enforces secure auth configuration. |
-| `SECRET_KEY` | Long random JWT signing secret, not the development default. |
-| `DATABASE_URL` | Managed PostgreSQL URL using `postgresql+asyncpg://`. |
-| `REDIS_URL` | Managed Redis endpoint for login throttling. |
-| `TRUSTED_PROXY_CIDRS` | Reverse-proxy addresses allowed to supply the client IP (e.g. `127.0.0.1/32`). Requires Uvicorn `--no-proxy-headers`. |
-| `CORS_ORIGINS` | Comma-separated exact frontend origins, no wildcard with cookies. |
-| `COOKIE_SECURE=true` | HTTPS-only cookies. Required in production. |
-| `S3_ENDPOINT_URL` | Empty for AWS S3; set for MinIO or another S3-compatible provider. |
-| `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` | Private evidence bucket credentials. |
-| `VITE_API_URL` | Public API base URL ending in `/api`, configured in Vercel. |
+| `APP_ENV` | `production`. Disables `/docs`, `/redoc` and `/openapi.json`. |
+| `SECRET_KEY` | Required. At least 32 characters, at least 10 distinct characters, not a default/example/placeholder. Signs JWTs and keys the login-limiter counters. Generate with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. |
+| `COOKIE_SECURE` | Must be `true`: auth cookies are `Secure`, HttpOnly (access/refresh) and `SameSite=Lax`, path `/`, so they are sent only over HTTPS. Secure cookies and HSTS are separate controls: HSTS is configured and verified in the HTTPS reverse-proxy deployment phase. |
+| `ACCESS_TOKEN_MINUTES` / `REFRESH_TOKEN_DAYS` | Between 1–60 minutes and 1–30 days (defaults 15 and 14). |
+| `DATABASE_URL` | Required. `postgresql+asyncpg://…` to a private/loopback PostgreSQL (normally port 5432 on the server); must not use the development password. The port is not fixed by the app (local development may use 55432). |
+| `REDIS_URL` | Required. `redis://`, `rediss://` or `unix://` URL to a private/loopback Redis (login rate limiting). |
+| `TRUSTED_PROXY_CIDRS` | Required. The reverse proxy address(es), normally `127.0.0.1/32`. Ranges broader than /8 (IPv4) or /32 (IPv6), such as `0.0.0.0/0`, are rejected. Uvicorn must run with `--no-proxy-headers`. |
+| `CORS_ORIGINS` | Empty for the same-origin deployment (recommended). Any listed origin must be an exact `https://` origin — no `*`, no localhost, no path. |
+| `STORAGE_BACKEND` | Must be `s3` (local disk storage is development-only). |
+| `S3_ENDPOINT_URL` | `http(s)://` URL of the private MinIO/S3-compatible endpoint, or empty for AWS S3. |
+| `S3_REGION`, `S3_BUCKET` | Bucket is required (keep it private, no anonymous access). |
+| `S3_ACCESS_KEY`, `S3_SECRET_KEY` | Required, not `minioadmin`/placeholders; secret at least 16 characters. Use a least-privilege service account, not the MinIO root user. |
+| `S3_PRESIGN_SECONDS` | 1–3600 (default 300). |
+| `LOGIN_IP_LIMIT`, `LOGIN_IP_WINDOW_SECONDS`, `LOGIN_PAIR_FAILURE_LIMIT`, `LOGIN_PAIR_FAILURE_WINDOW_SECONDS`, `LOGIN_FALLBACK_MAX_KEYS` | Login rate limiting (bounded in every environment). The window variable is `LOGIN_PAIR_FAILURE_WINDOW_SECONDS`; the misspelling `LOGIN_PAIR_WINDOW_SECONDS` is rejected in production. |
+| `MAX_UPLOAD_FILES`, `MAX_UPLOAD_BYTES`, `PASSWORD_HASH_CONCURRENCY` | Optional tuning (defaults 10, 10 MiB, 2). |
+| `VITE_API_URL` (frontend build) | `/api` for the same-origin deployment. A production build fails if it points to `http://`, localhost or `127.0.0.1`; if unset, a production build uses `/api` (development uses `http://localhost:8000/api`). |
 
 Never expose database, Redis, storage, or JWT secrets in `VITE_*` frontend variables. The storage adapter does not rely on a persistent local disk.
+
+### Production startup model (same-origin)
+
+Documented for the later deployment phase; nothing here is deployed by the repository.
+
+```text
+Browser --HTTPS :443--> reverse proxy --+-- /       -> built React files (apps/web/dist)
+                                        +-- /api/*  -> Uvicorn 127.0.0.1:8000 -> FastAPI
+FastAPI -> PostgreSQL (private/loopback), Redis (private/loopback), MinIO/S3 (private bucket)
+```
+
+```bash
+# Frontend (build once per release)
+cd apps/web
+VITE_API_URL=/api npm run build            # PowerShell: $env:VITE_API_URL = "/api"; npm run build
+
+# Backend (environment from .env.production.example, with real values)
+cd apps/api
+APP_ENV=production python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers
+```
 
 ## Tests and checks
 
@@ -171,8 +211,8 @@ The test suite uses isolated in-memory SQLite for fast security/workflow checks.
 1. Create managed PostgreSQL, Redis, and a private S3-compatible bucket. Apply bucket lifecycle, encryption, and least-privilege policy. Do not enable public listing.
 2. Deploy `apps/api` to a Python-capable host (for example Render, Fly.io, or a container platform) with HTTPS and environment variables above. Run `python -m alembic upgrade head` as a release migration, not from every web worker.
 3. Create the first admin using a strong environment-supplied password through the one-off `python -m scripts.create_admin` command. Import the real ALC master and create unique users through Admin → Users.
-4. Deploy the repository root to Vercel using `vercel.json`. Set `VITE_API_URL=https://api.example.org/api` in Vercel and `CORS_ORIGINS=https://portal.example.org` on the API. Ensure both origins share a registrable domain for SameSite cookie behavior.
-5. Set `APP_ENV=production`, `COOKIE_SECURE=true`, a random `SECRET_KEY`, and production S3 credentials on the API. Configure health checks at `/api/health`. Review backups, retention, monitoring, error reporting, and provider quotas before launch.
+4. Preferred: serve the built frontend and `/api` from one origin (see *Production startup model* above, `VITE_API_URL=/api`, `CORS_ORIGINS` empty). Alternative: deploy the repository root to Vercel using `vercel.json`. Set `VITE_API_URL=https://api.example.org/api` in Vercel and `CORS_ORIGINS=https://portal.example.org` on the API. Ensure both origins share a registrable domain for SameSite cookie behavior.
+5. Set every variable in *Production environment variables* (the API refuses to start otherwise). Configure health checks at `/api/health`. Review backups, retention, monitoring, error reporting, and provider quotas before launch.
 
 Do not point production at the sample CSV, development passwords, local database, or MinIO default credentials.
 
@@ -211,7 +251,8 @@ python -m uvicorn app.main:app \
 ```
 
 - The application never trusts localhost or private ranges on its own; trust comes only from
-  `TRUSTED_PROXY_CIDRS`. Leave it empty when no reverse proxy is in front of the API.
+  `TRUSTED_PROXY_CIDRS`. It is required with `APP_ENV=production` (the API always sits behind
+  the reverse proxy); leave it empty only in development when no proxy is in front of the API.
 - The proxy must append the real peer to `X-Forwarded-For` (Nginx:
   `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`; Caddy's `reverse_proxy`
   does this by default). The application reads the chain from the right, so values a client

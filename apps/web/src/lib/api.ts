@@ -1,4 +1,6 @@
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api'
+import { resolveApiUrl } from './apiUrl'
+
+const API_URL = resolveApiUrl(import.meta.env.VITE_API_URL, import.meta.env.DEV)
 
 function getCookie(name: string) {
   return document.cookie.split('; ').find((row) => row.startsWith(`${name}=`))?.split('=')[1]

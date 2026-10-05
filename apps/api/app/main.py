@@ -18,16 +18,16 @@ structlog.configure(
 )
 logging.basicConfig(level=logging.INFO)
 
-if settings.app_env == "production" and (
-    settings.secret_key.startswith("development-only")
-    or not settings.cookie_secure
-    or settings.storage_backend == "local"
-):
-    raise RuntimeError("Production requires a strong SECRET_KEY and COOKIE_SECURE=true")
+# Production configuration is validated when ``app.config.settings`` is created (see
+# ``app.config.validate_settings``): an unsafe production setup never reaches this point.
+# In production the interactive docs and the OpenAPI schema are not served at all.
+_production = settings.app_env == "production"
 app = FastAPI(
     title="ALC Growth Portal API",
     version="1.0.0",
-    docs_url="/docs" if settings.app_env != "production" else None,
+    docs_url=None if _production else "/docs",
+    redoc_url=None if _production else "/redoc",
+    openapi_url=None if _production else "/openapi.json",
 )
 app.add_middleware(
     CORSMiddleware,

@@ -1,4 +1,4 @@
 {
-  "compilerOptions": {"composite": true, "skipLibCheck": true, "module": "ESNext", "moduleResolution": "Bundler", "noEmit": true},
-  "include": ["vite.config.ts"]
+  "compilerOptions": {"composite": true, "target": "ES2022", "lib": ["ES2022", "DOM"], "skipLibCheck": true, "module": "ESNext", "moduleResolution": "Bundler", "noEmit": true},
+  "include": ["vite.config.ts", "src/lib/apiUrl.ts"]
 }
