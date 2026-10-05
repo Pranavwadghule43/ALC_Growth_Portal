@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import AsyncIterator
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from app.config import settings
@@ -34,6 +35,14 @@ class S3StorageService(StorageService):
             region_name=settings.s3_region,
             aws_access_key_id=settings.s3_access_key,
             aws_secret_access_key=settings.s3_secret_key,
+            config=Config(
+                connect_timeout=settings.s3_connect_timeout_seconds,
+                read_timeout=settings.s3_read_timeout_seconds,
+                retries={
+                    "mode": "standard",
+                    "total_max_attempts": settings.s3_max_attempts,
+                },
+            ),
         )
 
     async def upload(self, key: str, body: bytes, content_type: str) -> None:

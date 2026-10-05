@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     s3_access_key: str = "minioadmin"
     s3_secret_key: str = "minioadmin"
     s3_presign_seconds: int = 300
+    # Keep object-storage failures bounded. Readiness has its own outer 3-second timeout;
+    # these limits ensure the underlying botocore worker also returns promptly.
+    s3_connect_timeout_seconds: int = Field(default=1, ge=1, le=30)
+    s3_read_timeout_seconds: int = Field(default=2, ge=1, le=60)
+    # Total attempts includes the initial request. 2 = initial request + at most one retry.
+    s3_max_attempts: int = Field(default=2, ge=1, le=5)
 
     @property
     def allowed_origins(self) -> list[str]:
