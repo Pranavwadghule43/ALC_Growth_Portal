@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ALC, DCU, RCU, SBU, User
 from app.services.audit import record_audit
+from app.services.yearly_membership import lock_membership, require_no_pending_participation
 
 
 def _unit(unit) -> dict | None:
@@ -89,6 +90,7 @@ async def _move(
 async def reassign_alc(
     db: AsyncSession, alc_id: uuid.UUID, sbu_id: uuid.UUID, *, actor: User, request: Request
 ) -> dict:
+    await lock_membership(db)
     alc = await db.scalar(select(ALC).where(ALC.id == alc_id).with_for_update())
     if alc is None:
         raise HTTPException(status_code=404, detail="ALC not found")
@@ -104,6 +106,8 @@ async def reassign_alc(
     previous = await alc_hierarchy(db, alc)
     if alc.sbu_id == target.id:
         return _alc_result(alc, previous, previous, changed=False)
+
+    await require_no_pending_participation(db, [alc.id])
 
     current = await _chain_from_sbu(db, target)
     metadata = {
@@ -145,6 +149,7 @@ def _alc_result(alc: ALC, previous: dict, current: dict, *, changed: bool) -> di
 async def reassign_sbu(
     db: AsyncSession, sbu_id: uuid.UUID, dcu_id: uuid.UUID, *, actor: User, request: Request
 ) -> dict:
+    await lock_membership(db)
     sbu = await db.scalar(select(SBU).where(SBU.id == sbu_id).with_for_update())
     if sbu is None:
         raise HTTPException(status_code=404, detail="SBU not found")
@@ -154,6 +159,8 @@ async def reassign_sbu(
     alc_count = await db.scalar(select(func.count(ALC.id)).where(ALC.sbu_id == sbu.id)) or 0
     if sbu.dcu_id == target.id:
         return _sbu_result(sbu, previous, previous, alc_count, changed=False)
+
+    await require_no_pending_participation(db, select(ALC.id).where(ALC.sbu_id == sbu.id))
 
     current = {"rcu": _unit(await db.get(RCU, target.rcu_id)), "dcu": _unit(target)}
     metadata = {"sbu_code": sbu.code, "from": previous, "to": current, "alc_count": alc_count}

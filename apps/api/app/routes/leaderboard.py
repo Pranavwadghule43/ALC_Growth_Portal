@@ -6,7 +6,7 @@ same regional result. They grant no other access — ``/admin`` and ``/portal`` 
 guards and scopes — and return only the aggregate fields listed in
 ``app.services.leaderboard``.
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -21,16 +21,18 @@ router = APIRouter(
 
 @router.get("/region-top10")
 async def region_top10(
-    _: User = Depends(require_operational_user), db: AsyncSession = Depends(get_db)
+    _: User = Depends(require_operational_user), db: AsyncSession = Depends(get_db),
+    year: int | None = Query(None, ge=2000, le=2100),
 ):
     """Top 10 ACTIVE ALCs under an active SBU / DCU / RCU, by lifetime verified performance."""
-    return await leaderboard.region_top10(db)
+    return await leaderboard.region_top10(db, year)
 
 
 @router.get("/region-scores")
 async def region_scores(
-    _: User = Depends(require_operational_user), db: AsyncSession = Depends(get_db)
+    _: User = Depends(require_operational_user), db: AsyncSession = Depends(get_db),
+    year: int | None = Query(None, ge=2000, le=2100),
 ):
     """Every eligible ALC with its regional rank and score, from the same ranking as the Top
     10. Not filtered or re-scored by the caller's scope; the UI filters rows only."""
-    return await leaderboard.region_scores(db)
+    return await leaderboard.region_scores(db, year)

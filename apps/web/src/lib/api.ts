@@ -76,7 +76,9 @@ export const api = {
     if (csrf) xhr.setRequestHeader('X-CSRF-Token', decodeURIComponent(csrf))
     xhr.upload.onprogress = event => { if (event.lengthComputable) onProgress(Math.round(event.loaded / event.total * 100)) }
     xhr.onload = () => {
-      const result = JSON.parse(xhr.responseText || '{}')
+      let result: { detail?: string; error?: { message?: string } } = {}
+      try { result = JSON.parse(xhr.responseText || '{}') ?? {} }
+      catch { reject(new ApiError('The upload service returned an invalid response. Please try again.', xhr.status)); return }
       if (xhr.status >= 200 && xhr.status < 300) resolve(result)
       // Expired access token: share the single refresh, then upload once more.
       else if (xhr.status === 401 && retry) refreshSession().then(ok => {

@@ -9,7 +9,7 @@ import TopHeader, { type NavItem } from './TopHeader'
 // 'more' items (lower-frequency administration) always live under "More" (see TopHeader).
 const adminNav: readonly NavItem[] = [
   ['Dashboard', '/admin', Gauge, 'lg'], ['Partners', '/admin/partners', Users, 'lg'], ['Verification Queue', '/admin/verification', ClipboardCheck, 'lg'], ['Activities', '/admin/activities', Activity, 'lg'], ['ALCs', '/admin/alcs', Building2, 'lg'],
-  ['SBUs', '/admin/sbus', Network, 'lg'], ['Growth Challenge', '/admin/challenge', CalendarCheck, 'xl'], ['Reports', '/admin/reports', FileBarChart, '2xl'], ['Users', '/admin/users', ShieldCheck, 'more'], ['Audit Logs', '/admin/audit', BookOpen, 'more'], ['Settings', '/admin/settings', Settings, 'more']
+  ['SBUs', '/admin/sbus', Network, 'lg'], ['Growth Challenge', '/admin/challenge', CalendarCheck, 'xl'], ['Reports', '/admin/reports', FileBarChart, '2xl'], ['Users', '/admin/users', ShieldCheck, 'more'], ['Audit Logs', '/admin/audit', BookOpen, 'more'], ['Settings', '/admin/settings', Settings, 'more'], ['Yearly Activities', '/admin/yearly-activities', CalendarCheck, 'more']
 ]
 
 export default function AdminShell({ user }: { user: User }) {

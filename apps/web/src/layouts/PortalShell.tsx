@@ -11,15 +11,15 @@ import TopHeader, { type NavItem } from './TopHeader'
 // no audit logs and no global DCU administration.
 const dcuNav: readonly NavItem[] = [
   ['Dashboard', '/portal', Gauge, 'lg'], ['SBUs', '/portal/sbus', Network, 'lg'], ['ALCs', '/portal/alcs', Building2, 'lg'], ['Partners', '/portal/partners', Users, 'lg'], ['Activities', '/portal/activities', Activity, 'lg'],
-  ['Verification', '/portal/verification', ClipboardCheck, 'lg'], ['Reports', '/portal/reports', FileBarChart, 'lg'], ['Profile', '/portal/profile', Settings, 'xl']
+  ['Verification', '/portal/verification', ClipboardCheck, 'lg'], ['Reports', '/portal/reports', FileBarChart, 'lg'], ['Profile', '/portal/profile', Settings, 'xl'], ['Yearly Activities', '/portal/yearly-activities', CalendarCheck, 'more']
 ]
 const sbuNav: readonly NavItem[] = [
   ['Dashboard', '/portal', Gauge, 'lg'], ['ALCs', '/portal/alcs', Building2, 'lg'], ['Partners', '/portal/partners', Users, 'lg'], ['Activities', '/portal/activities', Activity, 'lg'],
-  ['Verification', '/portal/verification', ClipboardCheck, 'lg'], ['Reports', '/portal/reports', FileBarChart, 'lg'], ['Profile', '/portal/profile', Settings, 'xl']
+  ['Verification', '/portal/verification', ClipboardCheck, 'lg'], ['Reports', '/portal/reports', FileBarChart, 'lg'], ['Profile', '/portal/profile', Settings, 'xl'], ['Yearly Activities', '/portal/yearly-activities', CalendarCheck, 'more']
 ]
 const alcNav: readonly NavItem[] = [
   ['Dashboard', '/portal', Gauge, 'lg'], ['Partners', '/portal/partners', Users, 'lg'], ['Add Activity', '/portal/activities/new', PlusCircle, 'lg'], ['My Activities', '/portal/activities', Activity, 'lg'],
-  ['Tasks', '/portal/tasks', CalendarCheck, 'lg'], ['Growth Challenge', '/portal/challenge', ClipboardCheck, 'lg'], ['Performance', '/portal/performance', BarChart3, 'xl'], ['Growth Resources', '/portal/resources', BookOpen, '2xl'], ['Profile', '/portal/profile', Settings, '2xl']
+  ['Tasks', '/portal/tasks', CalendarCheck, 'lg'], ['Growth Challenge', '/portal/challenge', ClipboardCheck, 'lg'], ['Performance', '/portal/performance', BarChart3, 'xl'], ['Growth Resources', '/portal/resources', BookOpen, '2xl'], ['Profile', '/portal/profile', Settings, '2xl'], ['Yearly Activities', '/portal/yearly-activities', CalendarCheck, 'more']
 ]
 
 export default function PortalShell({ user }: { user: User }) {

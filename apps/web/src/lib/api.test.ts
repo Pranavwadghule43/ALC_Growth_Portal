@@ -117,3 +117,22 @@ describe('single-flight refresh', () => {
     expect(count('/auth/refresh')).toBe(2)
   })
 })
+
+describe('upload failure responses', () => {
+  it('rejects a non-JSON reverse-proxy failure instead of leaving the upload pending', async () => {
+    let complete: (() => void) | undefined
+    class UploadRequest {
+      status = 502
+      responseText = '<html>Bad gateway</html>'
+      upload = { onprogress: null }
+      onload: (() => void) | null = null
+      open() {} setRequestHeader() {} send() { complete = () => this.onload?.() }
+    }
+    vi.stubGlobal('XMLHttpRequest', UploadRequest)
+    const api = await loadApi()
+    const upload = api.uploadEvidence('/portal/activities/1/evidence', new File(['file'], 'evidence.pdf'), vi.fn())
+    const rejected = expect(upload).rejects.toMatchObject({ status: 502, message: 'The upload service returned an invalid response. Please try again.' })
+    complete!()
+    await rejected
+  })
+})

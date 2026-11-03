@@ -3,8 +3,9 @@
 // each role's dashboard. Each owns its query and its loading / error / empty states, so a
 // leaderboard failure never breaks the page. ALC Performance shows only personal performance.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act } from 'react'
 import { api, ApiError } from '../lib/api'
-import { button, click, deferred, fakeApi, render, selectValue, settle } from '../test/harness'
+import { button, click, deferred, fakeApi, render, selectValue, setInput, settle } from '../test/harness'
 import AdminDashboard from '../pages/AdminDashboard'
 import AlcDashboard from '../pages/AlcDashboard'
 import DcuDashboard from '../pages/DcuDashboard'
@@ -26,10 +27,10 @@ afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); document.body.inner
 
 const URL = '/leaderboard/region-top10'
 const top: RegionTop10Data = {
-  period: 'LIFETIME', generated_at: '2026-10-03T10:00:00Z',
+  period: 'LIFETIME', generated_at: '2026-10-03T10:00:00Z', activity_year: 2026, eligible_yearly_activities: 3,
   items: [
-    { rank: 1, alc_id: 'a1', alc_code: '57210164', alc_name: 'Jayesh Computers', sbu: { code: 'SBU 4', name: 'SBU Four' }, dcu: { code: 'DCU_NASHIK', name: 'DCU Nashik' }, verified_leads: 1250, verified_admissions: 40, activities_done: 12, partners: 6, score: 87.5 },
-    { rank: 2, alc_id: 'a2', alc_code: '57210168', alc_name: 'Shree Computers', sbu: { code: 'SBU 7', name: 'SBU Seven' }, dcu: { code: 'DCU_NASHIK', name: 'DCU Nashik' }, verified_leads: 90, verified_admissions: 3, activities_done: 4, partners: 1, score: 33.33 },
+    { rank: 1, alc_id: 'a1', alc_code: '57210164', alc_name: 'Jayesh Computers', sbu: { code: 'SBU 4', name: 'SBU Four' }, dcu: { code: 'DCU_NASHIK', name: 'DCU Nashik' }, verified_leads: 1250, verified_admissions: 40, activities_done: 12, partners: 6, yearly_completed_count: 3, score: 87.5 },
+    { rank: 2, alc_id: 'a2', alc_code: '57210168', alc_name: 'Shree Computers', sbu: { code: 'SBU 7', name: 'SBU Seven' }, dcu: { code: 'DCU_NASHIK', name: 'DCU Nashik' }, verified_leads: 90, verified_admissions: 3, activities_done: 4, partners: 1, yearly_completed_count: 1, score: 33.33 },
   ],
 }
 
@@ -44,11 +45,11 @@ describe('RegionTop10', () => {
     const { container } = await render(<RegionTop10 />)
     expect(api.calls).toEqual([URL])
     expect([...container.querySelectorAll('thead th')].map(th => th.textContent)).toEqual([
-      'Rank', 'ALC Code', 'ALC Name', 'SBU', 'DCU', 'Verified Leads', 'Verified Admissions', 'Verified Activities', 'Active Partners', 'Score',
+      'Rank', 'ALC Code', 'ALC Name', 'SBU', 'DCU', 'Verified Leads', 'Verified Admissions', 'Verified Activities', 'Active Partners', 'Yearly Completions', 'Score',
     ])
     expect(rows(container)).toEqual([
-      ['1', '57210164', 'Jayesh Computers', 'SBU 4', 'DCU Nashik', '1,250', '40', '12', '6', '87.50'],
-      ['2', '57210168', 'Shree Computers', 'SBU 7', 'DCU Nashik', '90', '3', '4', '1', '33.33'],
+      ['1', '57210164', 'Jayesh Computers', 'SBU 4', 'DCU Nashik', '1,250', '40', '12', '6', '3', '87.50'],
+      ['2', '57210168', 'Shree Computers', 'SBU 7', 'DCU Nashik', '90', '3', '4', '1', '1', '33.33'],
     ])
   })
 
@@ -92,10 +93,10 @@ const SCORES_URL = '/leaderboard/region-scores'
 const nashik = { code: 'DCU_NASHIK', name: 'DCU Nashik' }
 const puneNorth = { code: 'DCU_PUNE_NORTH', name: 'DCU Pune North' }
 function scored(rank: number, code: string, sbu: string, dcu: typeof nashik, score: number): RegionTop10Item {
-  return { rank, alc_id: `id-${code}`, alc_code: code, alc_name: `Centre ${code}`, sbu: { code: sbu, name: `${sbu} name` }, dcu, verified_leads: 100 - rank, verified_admissions: 10, activities_done: 3, partners: 2, score }
+  return { rank, alc_id: `id-${code}`, alc_code: code, alc_name: `Centre ${code}`, sbu: { code: sbu, name: `${sbu} name` }, dcu, verified_leads: 100 - rank, verified_admissions: 10, activities_done: 3, partners: 2, yearly_completed_count: 2, score }
 }
 const allScores: RegionTop10Data = {
-  period: 'LIFETIME', generated_at: '2026-10-03T10:00:00Z',
+  period: 'LIFETIME', generated_at: '2026-10-03T10:00:00Z', activity_year: 2026, eligible_yearly_activities: 3,
   items: [
     scored(1, 'A1', 'SBU 4', nashik, 91.25), scored(2, 'B1', 'SBU_PN_1', puneNorth, 85),
     scored(3, 'A2', 'SBU 6', nashik, 70.5), scored(4, 'B2', 'SBU_PN_2', puneNorth, 60),
@@ -111,7 +112,7 @@ const PERSONAL = ['Record activity', 'Verified learners', 'Growth Challenge', 'R
 function directoryRows(container: Element) {
   return [...container.querySelectorAll(`${DIRECTORY} tbody tr`)].map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent))
 }
-const shown = (container: Element) => directoryRows(container).map(r => [r[0], r[1], r[9]])  // rank, code, score
+const shown = (container: Element) => directoryRows(container).map(r => [r[0], r[1], r[10]])  // rank, code, score
 const select = (container: Element, name: string) => container.querySelector<HTMLSelectElement>(`${DIRECTORY} select[aria-label="${name}"]`)!
 const options = (el: HTMLSelectElement) => [...el.options].map(o => o.textContent)
 
@@ -199,7 +200,7 @@ describe('AllRegionScores', () => {
     const api = leaderboardApi()
     const { container } = await render(<AllRegionScores />)
     expect([...container.querySelectorAll(`${DIRECTORY} thead th`)].map(th => th.textContent)).toEqual([
-      'Regional Rank', 'ALC Code', 'ALC Name', 'SBU', 'DCU', 'Verified Leads', 'Verified Admissions', 'Verified Activities', 'Active Partners', 'Regional Score',
+      'Regional Rank', 'ALC Code', 'ALC Name', 'SBU', 'DCU', 'Verified Leads', 'Verified Admissions', 'Verified Activities', 'Active Partners', 'Yearly Completions', 'Regional Score',
     ])
     expect(select(container, 'DCU').value).toBe('')
     expect(select(container, 'SBU').value).toBe('')
@@ -265,34 +266,46 @@ describe('AllRegionScores', () => {
     const failed = await render(<AllRegionScores />)
     expect(failed.container.textContent).toContain('Scores unavailable')
   })
+
+  it('selecting an activity year updates both leaderboard requests together', async () => {
+    const calls = leaderboardApi()
+    const { container } = await render(<><RegionTop10 /><AllRegionScores /></>)
+    await setInput(container.querySelector<HTMLInputElement>('input[aria-label="Top 10 activity year"]')!, '2025')
+    await act(async () => { container.querySelector<HTMLFormElement>(`${BOARD} form`)!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+    await settle()
+    expect(calls.to(URL).at(-1)!.get('year')).toBe('2025')
+    expect(calls.to(SCORES_URL).at(-1)!.get('year')).toBe('2025')
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="All scores activity year"]')!.value).toBe('2025')
+    expect(shown(container)).toEqual(regional)
+  })
 })
 
 describe('RegionTop10ScoreReference', () => {
-  it('shows the four equal 25% components, the formula, the example and the notes', async () => {
+  it('shows the five equal 20% components, the formula, the example and the notes', async () => {
     const { container } = await render(<RegionTop10ScoreReference />)
     const text = container.textContent ?? ''
     for (const phrase of [
       'How the Region Top 10 Score Is Calculated', 'For reference only', 'Final Score', 'Example', '70.00',
-      'There are four approved performance metrics and each is given equal importance. Therefore each metric contributes 25% of the final score.',
-      'Each eligible ALC is compared with all other eligible ALCs in the region for each of the four performance metrics.',
+      'There are five approved performance metrics and each is given equal importance. Therefore each metric contributes 20% of the final score.',
+      'Each eligible ALC is compared with all other eligible ALCs in the region for each of the five performance metrics.',
       'A higher percentile score means the ALC performs better than more ALCs in the region for that metric.',
     ]) expect(text).toContain(phrase)
     const weights = [...container.querySelectorAll('ul[aria-label="Metric weights"] li')].map(li => [li.querySelector('p')?.textContent, li.querySelectorAll('p')[1]?.textContent])
     expect(weights).toEqual([
-      ['Verified Leads', '25%'], ['Verified Admissions', '25%'], ['Verified Activities', '25%'], ['Active Partners', '25%'],
+      ['Verified Leads', '20%'], ['Verified Admissions', '20%'], ['Verified Activities', '20%'], ['Active Partners', '20%'], ['Yearly Activity Completion', '20%'],
     ])
     expect([...container.querySelectorAll('div[aria-label="Final score formula"] p')].map(p => p.textContent)).toEqual([
-      'Final Score =', '(Verified Leads Score × 25%)', '+ (Verified Admissions Score × 25%)', '+ (Verified Activities Score × 25%)', '+ (Active Partners Score × 25%)',
+      'Final Score =', '(Verified Leads Score × 20%)', '+ (Verified Admissions Score × 20%)', '+ (Verified Activities Score × 20%)', '+ (Active Partners Score × 20%)', '+ (Yearly Activity Completion Score × 20%)',
     ])
     expect([...container.querySelectorAll('tbody tr')].map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent))).toEqual([
-      ['Verified Leads Score', '80', '× 25%', '20.00'], ['Verified Admissions Score', '60', '× 25%', '15.00'],
-      ['Verified Activities Score', '100', '× 25%', '25.00'], ['Active Partners Score', '40', '× 25%', '10.00'],
+      ['Verified Leads Score', '80', '× 20%', '16.00'], ['Verified Admissions Score', '60', '× 20%', '12.00'],
+      ['Verified Activities Score', '100', '× 20%', '20.00'], ['Active Partners Score', '40', '× 20%', '8.00'], ['Yearly Activity Completion Score', '70', '× 20%', '14.00'],
     ])
-    expect(container.querySelector('tfoot')?.textContent).toBe('Final Score = 20 + 15 + 25 + 1070.00')
+    expect(container.querySelector('tfoot')?.textContent).toBe('Final Score = 16 + 12 + 20 + 8 + 1470.00')
     const notes = [...container.querySelectorAll('ul[aria-label="Score notes"] li')].map(li => li.textContent)
     expect(notes).toContain('Only ACTIVE ALCs under an ACTIVE SBU, ACTIVE DCU and ACTIVE RCU participate.')
     expect(notes).toContain('Ranking uses the full, unrounded score.')
-    expect(notes).toHaveLength(10)
+    expect(notes).toHaveLength(12)
   })
 
   it('is read-only: no inputs, buttons, links or API calls', async () => {

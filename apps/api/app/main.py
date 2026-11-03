@@ -15,10 +15,11 @@ from app.observability import (
     REQUEST_ID_HEADER,
     RequestContextMiddleware,
     configure_logging,
+    is_sensitive_field,
     mark_logged,
     was_logged,
 )
-from app.routes import admin, auth, health, leaderboard, portal
+from app.routes import admin, auth, health, leaderboard, portal, yearly_activities
 
 # JSON lines in production, readable lines in development/test; level from LOG_LEVEL.
 configure_logging(settings.app_env, settings.log_level)
@@ -103,7 +104,31 @@ def _json_safe(value: Any) -> Any:
 
 
 def validation_details(exc: RequestValidationError) -> list[dict[str, Any]]:
-    return [_json_safe(error) for error in exc.errors()]
+    def redact(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: "[REDACTED]" if is_sensitive_field(str(key)) else redact(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [redact(item) for item in value]
+        return value
+
+    details = []
+    for error in exc.errors():
+        # Pydantic includes the rejected input, including full models for model validators.
+        # Keep useful non-secret field feedback without echoing passwords or tokens.
+        safe_error = dict(error)
+        location = error.get("loc", ())
+        if any(is_sensitive_field(str(part)) for part in location[1:]):
+            safe_error["input"] = "[REDACTED]"
+        elif error.get("type") == "json_invalid":
+            # A malformed JSON body cannot be safely parsed to find credential fields.
+            safe_error.pop("input", None)
+        elif "input" in safe_error:
+            safe_error["input"] = redact(safe_error["input"])
+        details.append(_json_safe(safe_error))
+    return details
 
 
 @app.exception_handler(RequestValidationError)
@@ -141,3 +166,4 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(portal.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(leaderboard.router, prefix="/api")
+app.include_router(yearly_activities.router, prefix="/api")

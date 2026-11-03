@@ -99,14 +99,14 @@ EXISTING = [("00010001", date(2026, 9, 1), date(2026, 10, 15), 55)]
 # --------------------------------------------------------------------------- #
 # Revision chain
 # --------------------------------------------------------------------------- #
-def test_revision_is_the_single_head_after_0006():
+def test_revision_chain_remains_linear_after_0006():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     config = Config()
     config.set_main_option("script_location", str(API_DIR / "alembic"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == [REVISION]
+    assert script.get_heads() == ["20261103_0008"]
     assert script.get_revision(REVISION).down_revision == PREVIOUS
     assert (MIGRATION.revision, MIGRATION.down_revision) == (REVISION, PREVIOUS)
 
@@ -269,7 +269,7 @@ INSERT = (
 def pg_schema():
     """Fresh schema built by the real migration chain, with existing per-ALC data."""
     pg("DROP SCHEMA public CASCADE", "CREATE SCHEMA public")
-    _alembic("upgrade", "head")
+    _alembic("upgrade", REVISION)
     pg("INSERT INTO alcs (id, alc_code, alc_name, status, created_at, updated_at) VALUES "
        "('11111111-1111-1111-1111-111111111111', '00010001', 'Centre A', 'ACTIVE', now(), now())",
        "INSERT INTO challenge_progress (id, alc_id, challenge_period_start, "
@@ -297,7 +297,7 @@ def test_pg_upgrade_downgrade_reupgrade(pg_schema):
     assert pg_state() == (PREVIOUS, False, False)
     assert pg_existing() == EXISTING  # per-ALC data survives the downgrade
 
-    _alembic("upgrade", "head")
+    _alembic("upgrade", REVISION)
     assert pg_state() == (REVISION, True, True)
     assert pg_existing() == EXISTING
     assert pg("SELECT count(*) FROM growth_challenges")[0][0] == 0
@@ -308,7 +308,7 @@ def test_pg_upgrade_from_a_database_without_the_table(pg_schema):
     """The production path: at 20260930_0006 with no ``growth_challenges`` table."""
     _alembic("stamp", PREVIOUS)
     pg("DROP TABLE growth_challenges")
-    _alembic("upgrade", "head")
+    _alembic("upgrade", REVISION)
     assert pg_state() == (REVISION, True, True)
     assert pg_existing() == EXISTING
     columns = {r[0]: r[1] for r in pg(
@@ -331,7 +331,7 @@ def test_pg_upgrade_adds_a_missing_exclusion_constraint_only(pg_schema):
     _alembic("stamp", PREVIOUS)
     pg(f"ALTER TABLE growth_challenges DROP CONSTRAINT {NO_OVERLAP}")
     pg(INSERT, name="Kept", start=date(2026, 10, 1), end=date(2026, 10, 30))
-    _alembic("upgrade", "head")
+    _alembic("upgrade", REVISION)
     assert pg_state() == (REVISION, True, True)
     assert pg("SELECT name FROM growth_challenges")[0][0] == "Kept"  # rows preserved
 

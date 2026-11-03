@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -357,4 +358,112 @@ class Notification(Base):
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
+    )
+
+
+class YearlyActivityDefinition(Base, TimestampMixin):
+    """Immutable canonical regional identity; DCU participation is snapshotted in runs."""
+
+    __tablename__ = "yearly_activity_definitions"
+    __table_args__ = (
+        UniqueConstraint("rcu_id", "calendar_year", "activity_code"),
+        CheckConstraint("calendar_year BETWEEN 2000 AND 2100", name="valid_year"),
+        CheckConstraint("activity_code = upper(trim(activity_code))", name="normalized_code"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    rcu_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("rcus.id", ondelete="RESTRICT"))
+    calendar_year: Mapped[int] = mapped_column(Integer)
+    activity_code: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(180))
+    description: Mapped[str | None] = mapped_column(Text)
+    introduced_by_dcu_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("dcus.id", ondelete="RESTRICT")
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+class YearlyActivityDCURun(Base, TimestampMixin):
+    __tablename__ = "yearly_activity_dcu_runs"
+    __table_args__ = (
+        UniqueConstraint("yearly_activity_id", "dcu_id"),
+        # Composite reference prevents a completion from naming a different definition.
+        UniqueConstraint("id", "yearly_activity_id"),
+        CheckConstraint(
+            "status IN ('AVAILABLE','SCHEDULED','ACTIVE','MARKING','FINALIZED')",
+            name="valid_status",
+        ),
+        CheckConstraint(
+            "(scheduled_start_date IS NULL AND scheduled_end_date IS NULL) OR "
+            "(scheduled_start_date IS NOT NULL AND scheduled_end_date IS NOT NULL "
+            "AND scheduled_end_date >= scheduled_start_date)", name="schedule_order",
+        ),
+        CheckConstraint(
+            "status = 'AVAILABLE' OR scheduled_start_date IS NOT NULL", name="scheduled_state",
+        ),
+        CheckConstraint(
+            "(status = 'FINALIZED' AND finalized_at IS NOT NULL) OR "
+            "(status <> 'FINALIZED' AND finalized_at IS NULL)", name="finalized_state",
+        ),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    yearly_activity_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("yearly_activity_definitions.id", ondelete="RESTRICT"), index=True
+    )
+    dcu_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("dcus.id", ondelete="RESTRICT"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(16), default="AVAILABLE")
+    scheduled_start_date: Mapped[date | None] = mapped_column(Date)
+    scheduled_end_date: Mapped[date | None] = mapped_column(Date)
+    instructions: Mapped[str | None] = mapped_column(Text)
+    activated_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finalized_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+class YearlyActivityCompletion(Base, TimestampMixin):
+    __tablename__ = "yearly_activity_completions"
+    __table_args__ = (
+        UniqueConstraint("yearly_activity_id", "alc_id"),
+        UniqueConstraint("yearly_activity_dcu_run_id", "alc_id"),
+        ForeignKeyConstraint(
+            ["yearly_activity_dcu_run_id", "yearly_activity_id"],
+            ["yearly_activity_dcu_runs.id", "yearly_activity_dcu_runs.yearly_activity_id"],
+            ondelete="RESTRICT",
+        ),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    yearly_activity_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("yearly_activity_definitions.id", ondelete="RESTRICT"), index=True
+    )
+    yearly_activity_dcu_run_id: Mapped[uuid.UUID] = mapped_column(index=True)
+    alc_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("alcs.id", ondelete="RESTRICT"), index=True
+    )
+    snapshot_sbu_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sbus.id", ondelete="RESTRICT")
+    )
+    completed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    marked_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    marked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
     )

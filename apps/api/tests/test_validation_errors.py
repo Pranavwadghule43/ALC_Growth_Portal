@@ -202,6 +202,49 @@ async def test_handler_output_is_json_serialisable_for_raw_exception_ctx():
     assert item["loc"] == ["body"]
 
 
+@pytest.mark.parametrize("field", ["password", "current_password", "new_password", "token"])
+async def test_credential_field_input_is_redacted(field):
+    exc = RequestValidationError([
+        {"type": "string_too_short", "loc": ("body", field),
+         "msg": "String should have at least 12 characters", "input": "do-not-echo"}
+    ])
+    response = await validation_error(None, exc)
+    assert b"do-not-echo" not in response.body
+    [item] = json.loads(response.body)["error"]["details"]
+    assert item["input"] == "[REDACTED]"
+
+
+async def test_model_validation_recursively_redacts_credentials():
+    exc = RequestValidationError([
+        {"type": "value_error", "loc": ("body",), "msg": "Invalid account",
+         "input": {"username": "valid-name", "password": "secret-one",
+                   "nested": [{"refresh_token": "secret-two", "label": "kept"}]}}
+    ])
+    response = await validation_error(None, exc)
+    assert b"secret-one" not in response.body and b"secret-two" not in response.body
+    [item] = json.loads(response.body)["error"]["details"]
+    assert item["input"]["username"] == "valid-name"
+    assert item["input"]["nested"][0] == {"refresh_token": "[REDACTED]", "label": "kept"}
+
+
+async def test_malformed_json_validation_does_not_echo_raw_body():
+    exc = RequestValidationError([
+        {"type": "json_invalid", "loc": ("body", 5), "msg": "JSON decode error",
+         "input": '{"password":"do-not-echo",'}
+    ])
+    response = await validation_error(None, exc)
+    assert b"do-not-echo" not in response.body
+
+
+async def test_real_login_validation_does_not_echo_password(strict_client):
+    response = await strict_client.post(
+        "/api/auth/login", json={"identifier": "unknown", "password": "secret"}
+    )
+    assert response.status_code == 422
+    assert '"secret"' not in response.text
+    assert response.json()["error"]["details"][0]["input"] == "[REDACTED]"
+
+
 # --------------------------------------------------------------------------- #
 # The real application endpoint that exposed the bug.
 # --------------------------------------------------------------------------- #

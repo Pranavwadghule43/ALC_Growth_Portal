@@ -1,0 +1,13 @@
+apps\api\scripts\create_admin.py:1:1: I001 [*] Import block is un-sorted or un-formatted
+apps\api\scripts\create_alc_users.py:1:1: I001 [*] Import block is un-sorted or un-formatted
+apps\api\scripts\demo_smoke.py:14:101: E501 Line too long (122 > 100)
+apps\api\scripts\demo_smoke.py:27:101: E501 Line too long (103 > 100)
+apps\api\scripts\demo_smoke.py:32:101: E501 Line too long (124 > 100)
+apps\api\scripts\demo_smoke.py:39:101: E501 Line too long (234 > 100)
+apps\api\scripts\demo_smoke.py:58:101: E501 Line too long (151 > 100)
+apps\api\scripts\demo_smoke.py:73:101: E501 Line too long (149 > 100)
+apps\api\scripts\demo_smoke.py:76:101: E501 Line too long (135 > 100)
+apps\api\scripts\demo_smoke.py:81:101: E501 Line too long (120 > 100)
+apps\api\scripts\demo_smoke.py:86:101: E501 Line too long (132 > 100)
+Found 11 errors.
+[*] 2 fixable with the `--fix` option.

@@ -7,7 +7,7 @@ Eligibility, metrics, percentiles, weights, scores and ranks therefore have a si
 Intentionally regional: ADMIN, DCU, SBU and ALC users all see the same ranking, so nothing
 here uses ``app.services.scope``. Any DCU / SBU filtering of the directory happens after
 scoring (in the UI) and never re-normalises a subset. It exposes only ALC identity (code,
-name, SBU, DCU), four lifetime aggregates and a score — never activity, partner, contact or
+name, SBU, DCU), four lifetime aggregates, an annual count and a score — never contact or
 user details.
 
 Metrics (lifetime, each activity's *current* status):
@@ -29,7 +29,7 @@ Scoring: each metric becomes a regional percentile over *every* eligible ALC (be
 
 When every eligible ALC has the same value for a metric (this includes a single eligible
 ALC) the formula is undefined or meaningless, so the component is 100 for a non-zero value
-and 0 for zero. The final score weights the four components equally (25% each). Scores are
+and 0 for zero. The final score weights five components equally (20% each). Scores are
 kept as exact fractions; only the response rounds them (2 decimals, half up). Ranking is the
 exact score descending, then ``alc_code`` ascending.
 
@@ -48,16 +48,54 @@ from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from fractions import Fraction
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.enums import ActivityStatus, AlcStatus
-from app.models import ALC, DCU, RCU, SBU, Activity, Partner
+from app.models import (
+    ALC,
+    DCU,
+    RCU,
+    SBU,
+    Activity,
+    Partner,
+    YearlyActivityCompletion,
+    YearlyActivityDCURun,
+    YearlyActivityDefinition,
+)
+from app.services.growth_challenge import current_date
+from app.services.yearly_activities import eligible_activity_ids
 
 PERIOD = "LIFETIME"
 TOP_N = 10
-METRICS = ("verified_leads", "verified_admissions", "activities_done", "partners")
-WEIGHTS = {metric: Fraction(1, 4) for metric in METRICS}
+METRICS = ("verified_leads", "verified_admissions", "activities_done", "partners",
+           "yearly_completed_count")
+WEIGHTS = {metric: Fraction(1, 5) for metric in METRICS}
+
+
+class RegionalRows(list):
+    """Aggregate-only ranking plus the regional activity denominator, even if empty."""
+
+    def __init__(self, rows=(), *, eligible_yearly_activities: int = 0):
+        super().__init__(rows)
+        self.eligible_yearly_activities = eligible_yearly_activities
+
+
+def activity_year(year: int | None = None) -> int:
+    return year if year is not None else current_date().year
+
+
+def eligible_yearly_activities_query(year: int):
+    """Stable participant rows, including inactive or not-yet-activated DCUs, all finalize.
+
+    Never infer participation from voluntarily activated runs. Definitions without any
+    participants fail closed. The DCU snapshot remains required after reorganization.
+    """
+    definition = YearlyActivityDefinition
+    return (
+        select(definition.id, definition.rcu_id)
+        .where(definition.id.in_(eligible_activity_ids(year))).cte("eligible_yearly_activity")
+    )
 
 
 @dataclass
@@ -73,12 +111,26 @@ class LeaderboardRow:
     verified_admissions: int
     activities_done: int
     partners: int
+    yearly_completed_count: int = 0
     components: dict[str, Fraction] = field(default_factory=dict)
     score: Fraction = Fraction(0)
 
 
-def regional_metrics_query():
-    """The single aggregate statement: one row per eligible ALC with its four metrics."""
+def regional_metrics_query(year: int | None = None):
+    """One aggregate statement; a metadata-only row preserves empty-ranking counts."""
+    eligible = eligible_yearly_activities_query(activity_year(year))
+    completion = YearlyActivityCompletion
+    yearly = (
+        select(completion.alc_id, eligible.c.rcu_id,
+               func.count(func.distinct(completion.yearly_activity_id))
+               .label("yearly_completed_count"))
+        .join(eligible, eligible.c.id == completion.yearly_activity_id)
+        .join(YearlyActivityDCURun,
+              YearlyActivityDCURun.id == completion.yearly_activity_dcu_run_id)
+        .where(completion.completed.is_(True), YearlyActivityDCURun.status == "FINALIZED")
+        .group_by(completion.alc_id, eligible.c.rcu_id)
+        .subquery("yearly_completion")
+    )
     verified = (
         select(
             Activity.alc_id.label("alc_id"),
@@ -102,7 +154,8 @@ def regional_metrics_query():
     admissions = func.coalesce(verified.c.verified_admissions, 0)
     done = func.coalesce(verified.c.activities_done, 0)
     partners = func.coalesce(active_partners.c.partners, 0)
-    return (
+    yearly_count = func.coalesce(yearly.c.yearly_completed_count, 0)
+    metrics = (
         select(
             ALC.id.label("alc_id"),
             ALC.alc_code,
@@ -115,6 +168,7 @@ def regional_metrics_query():
             admissions.label("verified_admissions"),
             done.label("activities_done"),
             partners.label("partners"),
+            yearly_count.label("yearly_completed_count"),
         )
         # Inner joins: only ALCs with a complete ALC -> SBU -> DCU -> RCU chain.
         .join(SBU, ALC.sbu_id == SBU.id)
@@ -122,15 +176,26 @@ def regional_metrics_query():
         .join(RCU, DCU.rcu_id == RCU.id)
         .outerjoin(verified, verified.c.alc_id == ALC.id)
         .outerjoin(active_partners, active_partners.c.alc_id == ALC.id)
+        .outerjoin(yearly, (yearly.c.alc_id == ALC.id) & (yearly.c.rcu_id == RCU.id))
         .where(
             # Every level of the chain must be active.
             ALC.status == AlcStatus.ACTIVE,
             SBU.is_active.is_(True),
             DCU.is_active.is_(True),
             RCU.is_active.is_(True),
-            or_(leads > 0, admissions > 0, done > 0, partners > 0),
+            or_(leads > 0, admissions > 0, done > 0, partners > 0, yearly_count > 0),
         )
-        .order_by(ALC.alc_code)
+        .subquery("regional_metrics")
+    )
+    counts = (
+        select(func.count(eligible.c.id).label("eligible_yearly_activities"))
+        .join(RCU, RCU.id == eligible.c.rcu_id).where(RCU.is_active.is_(True))
+        .subquery("yearly_population")
+    )
+    return (
+        select(*metrics.c, counts.c.eligible_yearly_activities)
+        .select_from(counts.outerjoin(metrics, true()))
+        .order_by(metrics.c.alc_code)
     )
 
 
@@ -162,7 +227,10 @@ def score_rows(rows: list[LeaderboardRow]) -> list[LeaderboardRow]:
 def rank_rows(rows: list[LeaderboardRow], limit: int | None = TOP_N) -> list[LeaderboardRow]:
     """Exact score descending, then ALC code ascending; the first ``limit`` rows (all when
     ``limit`` is None)."""
-    return sorted(rows, key=lambda r: (-r.score, r.alc_code))[:limit]
+    return RegionalRows(
+        sorted(rows, key=lambda r: (-r.score, r.alc_code))[:limit],
+        eligible_yearly_activities=getattr(rows, "eligible_yearly_activities", 0),
+    )
 
 
 def display_score(score: Fraction) -> float:
@@ -171,25 +239,27 @@ def display_score(score: Fraction) -> float:
     return float(exact.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
-async def eligible_rows(db: AsyncSession) -> list[LeaderboardRow]:
-    result = await db.execute(regional_metrics_query())
-    return [
+async def eligible_rows(db: AsyncSession, year: int | None = None) -> list[LeaderboardRow]:
+    result = (await db.execute(regional_metrics_query(year))).mappings().all()
+    return RegionalRows([
         LeaderboardRow(**{key: (int(value) if key in METRICS else value)
-                          for key, value in row.items()})
-        for row in result.mappings()
-    ]
+                          for key, value in row.items() if key != "eligible_yearly_activities"})
+        for row in result if row["alc_id"] is not None
+    ], eligible_yearly_activities=result[0]["eligible_yearly_activities"] if result else 0)
 
 
-async def regional_ranking(db: AsyncSession) -> list[LeaderboardRow]:
+async def regional_ranking(db: AsyncSession, year: int | None = None) -> list[LeaderboardRow]:
     """Every eligible ALC, scored against the whole eligible region and in regional rank
     order. The single source for both the Top 10 and the score directory."""
-    return rank_rows(score_rows(await eligible_rows(db)), limit=None)
+    return rank_rows(score_rows(await eligible_rows(db, year)), limit=None)
 
 
-def leaderboard_payload(ranked: list[LeaderboardRow]) -> dict:
+def leaderboard_payload(ranked: list[LeaderboardRow], year: int | None = None) -> dict:
     """Response body: ``rank`` is the row's position in the complete regional ranking."""
     return {
         "period": PERIOD,
+        "activity_year": activity_year(year),
+        "eligible_yearly_activities": getattr(ranked, "eligible_yearly_activities", 0),
         "generated_at": datetime.now(timezone.utc),
         "items": [
             {
@@ -203,6 +273,7 @@ def leaderboard_payload(ranked: list[LeaderboardRow]) -> dict:
                 "verified_admissions": row.verified_admissions,
                 "activities_done": row.activities_done,
                 "partners": row.partners,
+                "yearly_completed_count": row.yearly_completed_count,
                 "score": display_score(row.score),
             }
             for position, row in enumerate(ranked, 1)
@@ -210,11 +281,14 @@ def leaderboard_payload(ranked: list[LeaderboardRow]) -> dict:
     }
 
 
-async def region_top10(db: AsyncSession) -> dict:
+async def region_top10(db: AsyncSession, year: int | None = None) -> dict:
     """The first 10 rows of the regional ranking."""
-    return leaderboard_payload((await regional_ranking(db))[:TOP_N])
+    ranked = await regional_ranking(db, year)
+    return leaderboard_payload(RegionalRows(
+        ranked[:TOP_N], eligible_yearly_activities=ranked.eligible_yearly_activities
+    ), year)
 
 
-async def region_scores(db: AsyncSession) -> dict:
+async def region_scores(db: AsyncSession, year: int | None = None) -> dict:
     """Every eligible ALC with its regional rank and score (same values as the Top 10)."""
-    return leaderboard_payload(await regional_ranking(db))
+    return leaderboard_payload(await regional_ranking(db, year), year)

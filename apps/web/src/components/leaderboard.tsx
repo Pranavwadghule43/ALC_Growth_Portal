@@ -1,25 +1,42 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import { api } from '../lib/api'
 import { Empty, ErrorState, Filter, formatNumber, Loading } from './ui'
 
 interface UnitBrief { code: string; name: string }
 export interface RegionTop10Item {
   rank: number; alc_id: string; alc_code: string; alc_name: string; sbu: UnitBrief | null; dcu: UnitBrief | null
-  verified_leads: number; verified_admissions: number; activities_done: number; partners: number; score: number
+  verified_leads: number; verified_admissions: number; activities_done: number; partners: number; yearly_completed_count: number; score: number
 }
-export interface RegionTop10Data { period: string; generated_at: string; items: RegionTop10Item[] }
+export interface RegionTop10Data { period: string; generated_at: string; activity_year: number; eligible_yearly_activities: number; items: RegionTop10Item[] }
+
+function useActivityYear() {
+  const [params, setParams] = useSearchParams()
+  const requested = params.get('activity_year')
+  const year = requested && /^\d{4}$/.test(requested) && Number(requested) >= 2000 && Number(requested) <= 2100 ? Number(requested) : null
+  const current = Number(new Intl.DateTimeFormat('en', { timeZone: 'Asia/Kolkata', year: 'numeric' }).format(new Date()))
+  return { year, current, choose: (next: number) => { const updated = new URLSearchParams(params); updated.set('activity_year', String(next)); setParams(updated, { replace: true }) } }
+}
+
+function ActivityYearForm({ value, label, onChoose }: { value: number; label: string; onChoose: (year: number) => void }) {
+  const [draft, setDraft] = useState(String(value))
+  return <form className="mt-3 flex flex-wrap items-end gap-2" onSubmit={event => { event.preventDefault(); onChoose(Number(draft)) }}>
+    <label className="text-xs font-semibold text-slate-600">Yearly activity year<input aria-label={label} className="mt-1 max-w-32" type="number" min={2000} max={2100} step={1} required value={draft} onChange={event => setDraft(event.target.value)} /></label>
+    <button className="btn-secondary" type="submit">Apply year</button>
+  </form>
+}
 
 // One table layout for both leaderboard views. Rows deliberately do not link to ALC detail
 // pages (most ALCs are outside the viewer's scope).
 function ScoreTable({ items, rankLabel, scoreLabel, className = '' }: { items: RegionTop10Item[]; rankLabel: string; scoreLabel: string; className?: string }) {
   return <div className={`table-wrap ${className}`}><table className="table-dense">
-    <thead className="sticky top-0 z-10"><tr><th className="text-right">{rankLabel}</th><th>ALC Code</th><th>ALC Name</th><th>SBU</th><th>DCU</th><th className="text-right">Verified Leads</th><th className="text-right">Verified Admissions</th><th className="text-right">Verified Activities</th><th className="text-right">Active Partners</th><th className="text-right">{scoreLabel}</th></tr></thead>
+    <thead className="sticky top-0 z-10"><tr><th className="text-right">{rankLabel}</th><th>ALC Code</th><th>ALC Name</th><th>SBU</th><th>DCU</th><th className="text-right">Verified Leads</th><th className="text-right">Verified Admissions</th><th className="text-right">Verified Activities</th><th className="text-right">Active Partners</th><th className="text-right">Yearly Completions</th><th className="text-right">{scoreLabel}</th></tr></thead>
     <tbody>{items.map(x => <tr key={x.alc_id}>
       <td className="text-right font-bold text-navy">{x.rank}</td><td className="font-semibold text-navy">{x.alc_code}</td><td>{x.alc_name}</td>
       <td>{x.sbu?.code ?? '—'}</td><td className="text-sm text-slate-600">{x.dcu?.name ?? '—'}</td>
       <td className="text-right">{formatNumber(x.verified_leads)}</td><td className="text-right">{formatNumber(x.verified_admissions)}</td><td className="text-right">{formatNumber(x.activities_done)}</td><td className="text-right">{formatNumber(x.partners)}</td>
-      <td className="text-right font-semibold text-navy">{x.score.toFixed(2)}</td>
+      <td className="text-right">{formatNumber(x.yearly_completed_count)}</td><td className="text-right font-semibold text-navy">{x.score.toFixed(2)}</td>
     </tr>)}</tbody>
   </table></div>
 }
@@ -27,10 +44,11 @@ function ScoreTable({ items, rankLabel, scoreLabel, className = '' }: { items: R
 // Region Top 10 (``GET /leaderboard/region-top10``): the same regional ranking for ADMIN, DCU,
 // SBU and ALC. Fixed: no filters. Owns its query, so a failure here never breaks the page.
 export function RegionTop10() {
-  const q = useQuery({ queryKey: ['region-top10'], queryFn: () => api.get<RegionTop10Data>('/leaderboard/region-top10') })
+  const selection = useActivityYear()
+  const q = useQuery({ queryKey: ['region-top10', selection.year], queryFn: () => api.get<RegionTop10Data>(`/leaderboard/region-top10${selection.year ? `?year=${selection.year}` : ''}`) })
   return <section className="mt-8" aria-labelledby="region-top10-title">
-    <div className="mb-3"><h2 id="region-top10-title" className="font-bold text-navy">Region Top 10</h2><p className="text-xs text-slate-500">Lifetime verified performance of active ALCs across the region. Score weights verified leads, verified admissions, verified activities and active partners equally (25% each), each as a regional percentile.</p></div>
-    {q.isLoading ? <Loading label="Loading Region Top 10" /> : q.error || !q.data ? <ErrorState error={q.error} /> : !q.data.items.length ? <Empty title="No ranked ALCs yet" message="ALCs appear here once they have verified activities or active partners." /> : <ScoreTable items={q.data.items} rankLabel="Rank" scoreLabel="Score" />}
+    <div className="mb-3"><h2 id="region-top10-title" className="font-bold text-navy">Region Top 10</h2><p className="text-xs text-slate-500">Five regional percentiles contribute 20% each: lifetime verified leads, admissions, activities and active partners, plus yearly activity completions for the selected year. Yearly results count after every participating DCU finalizes.</p><ActivityYearForm key={selection.year ?? 'current'} value={selection.year ?? q.data?.activity_year ?? selection.current} label="Top 10 activity year" onChoose={selection.choose} />{q.data && <p className="mt-2 text-xs text-slate-500">{q.data.activity_year}: {q.data.eligible_yearly_activities} regionally eligible activities.</p>}</div>
+    {q.isLoading ? <Loading label="Loading Region Top 10" /> : q.error || !q.data ? <ErrorState error={q.error} /> : !q.data.items.length ? <Empty title="No ranked ALCs yet" message="ALCs appear once any of the five performance metrics is positive." /> : <ScoreTable items={q.data.items} rankLabel="Rank" scoreLabel="Score" />}
   </section>
 }
 
@@ -46,7 +64,8 @@ function unitOptions(units: (UnitBrief | null)[]): UnitBrief[] {
 // rows are shown: ranks and scores always come from the whole region and are never recomputed
 // or renumbered. The list is fetched once; changing a filter makes no request.
 export function AllRegionScores() {
-  const q = useQuery({ queryKey: ['region-scores'], queryFn: () => api.get<RegionTop10Data>('/leaderboard/region-scores') })
+  const selection = useActivityYear()
+  const q = useQuery({ queryKey: ['region-scores', selection.year], queryFn: () => api.get<RegionTop10Data>(`/leaderboard/region-scores${selection.year ? `?year=${selection.year}` : ''}`) })
   const [dcu, setDcu] = useState('')
   const [sbu, setSbu] = useState('')
   const items = q.data?.items ?? []
@@ -60,8 +79,8 @@ export function AllRegionScores() {
   const rows = items.filter(x => (!dcu || x.dcu?.code === dcu) && (!sbu || x.sbu?.code === sbu))
   const filtered = !!(dcu || sbu)
   return <section className="mt-8" aria-labelledby="region-scores-title">
-    <div className="mb-3"><h2 id="region-scores-title" className="font-bold text-navy">All ALC Scores</h2><p className="text-xs text-slate-500">View the regional score and performance metrics for eligible ALCs. Filters only narrow the list: regional rank and regional score always compare each ALC with the whole region.</p></div>
-    {q.isLoading ? <Loading label="Loading ALC scores" /> : q.error || !q.data ? <ErrorState error={q.error} /> : !items.length ? <Empty title="No scored ALCs yet" message="ALCs appear here once they have verified activities or active partners." /> : <>
+    <div className="mb-3"><h2 id="region-scores-title" className="font-bold text-navy">All ALC Scores</h2><p className="text-xs text-slate-500">View the regional score and performance metrics for eligible ALCs. Filters only narrow the list: regional rank and regional score always compare each ALC with the whole region.</p><ActivityYearForm key={selection.year ?? 'current'} value={selection.year ?? q.data?.activity_year ?? selection.current} label="All scores activity year" onChoose={selection.choose} /></div>
+    {q.isLoading ? <Loading label="Loading ALC scores" /> : q.error || !q.data ? <ErrorState error={q.error} /> : !items.length ? <Empty title="No scored ALCs yet" message="ALCs appear once any of the five performance metrics is positive." /> : <>
       <div className="panel mb-3 flex flex-wrap items-end gap-3 p-4">
         <div className="w-full sm:w-64"><Filter label="DCU"><select aria-label="DCU" value={dcu} onChange={e => chooseDcu(e.target.value)}><option value="">All DCUs</option>{dcus.map(d => <option key={d.code} value={d.code}>{d.name}</option>)}</select></Filter></div>
         <div className="w-full sm:w-64"><Filter label="SBU"><select aria-label="SBU" value={sbu} onChange={e => setSbu(e.target.value)}><option value="">All SBUs</option>{sbus.map(s => <option key={s.code} value={s.code}>{s.code}</option>)}</select></Filter></div>
@@ -73,18 +92,20 @@ export function AllRegionScores() {
   </section>
 }
 
-// Static, read-only explanation of the approved Region Top 10 scoring rules (equal 25% weights
+// Static, read-only explanation of the approved Region Top 10 scoring rules (equal 20% weights
 // over regional percentiles). Shown to ADMIN / DCU / SBU below the leaderboard; never to ALC
 // users. It makes no API call and changes nothing about how scores are calculated.
-const SCORE_METRICS = ['Verified Leads', 'Verified Admissions', 'Verified Activities', 'Active Partners'] as const
-const EXAMPLE_SCORES = [['Verified Leads Score', 80], ['Verified Admissions Score', 60], ['Verified Activities Score', 100], ['Active Partners Score', 40]] as const
+const SCORE_METRICS = ['Verified Leads', 'Verified Admissions', 'Verified Activities', 'Active Partners', 'Yearly Activity Completion'] as const
+const EXAMPLE_SCORES = [['Verified Leads Score', 80], ['Verified Admissions Score', 60], ['Verified Activities Score', 100], ['Active Partners Score', 40], ['Yearly Activity Completion Score', 70]] as const
 const SCORE_NOTES = [
-  'Leaderboard values are lifetime totals.',
+  'The first four metrics are lifetime totals; yearly activity completion uses the selected year (current year in Asia/Kolkata by default).',
+  'Only YES results for activities finalized by every participating DCU count toward yearly scoring.',
+  'The yearly activity population is common to the region; there is no fixed annual activity target.',
   'Only VERIFIED activities contribute to Verified Leads, Verified Admissions and Verified Activities.',
   'Only ACTIVE partners are counted.',
   'Only ACTIVE ALCs under an ACTIVE SBU, ACTIVE DCU and ACTIVE RCU participate.',
   'The complete ALC → SBU → DCU → RCU hierarchy is required.',
-  'ALCs with zero across all four metrics are excluded.',
+  'ALCs with zero across all five metrics are excluded; yearly-only achievement is eligible.',
   'Percentile comparison uses all eligible regional ALCs before the Top 10 is selected.',
   'Ranking uses the full, unrounded score.',
   'The displayed score is rounded to 2 decimal places.',
@@ -94,26 +115,26 @@ const SCORE_NOTES = [
 export function RegionTop10ScoreReference() {
   return <section className="mt-6 panel p-5" aria-labelledby="region-top10-reference-title">
     <div className="mb-4"><h2 id="region-top10-reference-title" className="font-bold text-navy">How the Region Top 10 Score Is Calculated</h2><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">For reference only</p></div>
-    <p className="text-sm text-slate-700">Each of the four metrics has equal importance. There are four approved performance metrics and each is given equal importance. Therefore each metric contributes 25% of the final score.</p>
-    <ul aria-label="Metric weights" className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{SCORE_METRICS.map(m => <li key={m} className="rounded-lg border border-line bg-tint p-4 text-center"><p className="text-sm font-semibold text-navy">{m}</p><p className="mt-1 text-2xl font-bold text-brand">25%</p></li>)}</ul>
+    <p className="text-sm text-slate-700">There are five approved performance metrics and each is given equal importance. Therefore each metric contributes 20% of the final score.</p>
+    <ul aria-label="Metric weights" className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">{SCORE_METRICS.map(m => <li key={m} className="rounded-lg border border-line bg-tint p-4 text-center"><p className="text-sm font-semibold text-navy">{m}</p><p className="mt-1 text-2xl font-bold text-brand">20%</p></li>)}</ul>
     <div className="mt-5 grid gap-5 lg:grid-cols-2">
       <div className="min-w-0">
         <h3 className="text-sm font-bold text-navy">How it works</h3>
         <div className="mt-2 space-y-2 text-sm text-slate-700">
-          <p>Each eligible ALC is compared with all other eligible ALCs in the region for each of the four performance metrics.</p>
+          <p>Each eligible ALC is compared with all other eligible ALCs in the region for each of the five performance metrics.</p>
           <p>Each metric is converted into a regional score from 0 to 100 based on the ALC’s position compared with the other eligible ALCs.</p>
           <p>A higher percentile score means the ALC performs better than more ALCs in the region for that metric.</p>
-          <p>The four metric scores are then given equal weight to calculate the final Region Top 10 score.</p>
+          <p>The five metric scores are then given equal weight to calculate the final Region Top 10 score.</p>
         </div>
         <h3 className="mt-4 text-sm font-bold text-navy">Final Score</h3>
-        <div aria-label="Final score formula" className="mt-2 rounded-lg border border-line bg-tint-soft p-4 text-sm leading-7 text-navy"><p className="font-semibold">Final Score =</p><p>(Verified Leads Score × 25%)</p><p>+ (Verified Admissions Score × 25%)</p><p>+ (Verified Activities Score × 25%)</p><p>+ (Active Partners Score × 25%)</p></div>
+        <div aria-label="Final score formula" className="mt-2 rounded-lg border border-line bg-tint-soft p-4 text-sm leading-7 text-navy"><p className="font-semibold">Final Score =</p><p>(Verified Leads Score × 20%)</p><p>+ (Verified Admissions Score × 20%)</p><p>+ (Verified Activities Score × 20%)</p><p>+ (Active Partners Score × 20%)</p><p>+ (Yearly Activity Completion Score × 20%)</p></div>
       </div>
       <div className="min-w-0">
         <h3 className="text-sm font-bold text-navy">Example</h3>
         <p className="text-xs text-slate-500">Illustration only, not real leaderboard data.</p>
         <div className="mt-2 table-wrap shadow-none"><table className="table-dense"><thead><tr><th>Metric score</th><th className="text-right">Score</th><th className="text-right">Weight</th><th className="text-right">Contribution</th></tr></thead>
-          <tbody>{EXAMPLE_SCORES.map(([label, value]) => <tr key={label}><td>{label}</td><td className="text-right">{value}</td><td className="text-right">× 25%</td><td className="text-right">{(value * 0.25).toFixed(2)}</td></tr>)}</tbody>
-          <tfoot><tr className="border-t bg-tint font-semibold text-navy"><td className="px-3 py-3" colSpan={3}>Final Score = 20 + 15 + 25 + 10</td><td className="px-3 py-3 text-right">70.00</td></tr></tfoot>
+          <tbody>{EXAMPLE_SCORES.map(([label, value]) => <tr key={label}><td>{label}</td><td className="text-right">{value}</td><td className="text-right">× 20%</td><td className="text-right">{(value * 0.20).toFixed(2)}</td></tr>)}</tbody>
+          <tfoot><tr className="border-t bg-tint font-semibold text-navy"><td className="px-3 py-3" colSpan={3}>Final Score = 16 + 12 + 20 + 8 + 14</td><td className="px-3 py-3 text-right">70.00</td></tr></tfoot>
         </table></div>
       </div>
     </div>

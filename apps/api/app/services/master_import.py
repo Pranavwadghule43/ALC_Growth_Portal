@@ -40,6 +40,7 @@ from app.models import ALC, DCU, RCU, SBU
 from app.services.alc_import import CODE_PATTERN, _clean_code, _clean_text, _row_is_empty
 from app.services.audit import record_audit
 from app.services.hierarchy import SBU_DCU_LINKS
+from app.services.yearly_membership import lock_membership, require_no_pending_participation
 
 CANONICAL_COLUMNS = ("RCU", "DCU", "SBU", "ALC Code", "ALC Name", "Active")
 ACTIVE_VALUES = {
@@ -473,6 +474,7 @@ async def perform(
     allow_nashik_change: bool = False,
     source: str | None = None,
 ) -> dict:
+    await lock_membership(db)
     report = await validate(db, records)
     if not report["valid"]:
         raise MasterImportBlocked(public(report))
@@ -487,11 +489,16 @@ async def perform(
     created = updated = unchanged = 0
     changed_codes: list[dict] = []
     try:
-        for sbu, dcu in report["_sbu_links"]:
-            sbu.dcu_id = dcu.id  # only SBUs that had no DCU; never re-parented
         codes = [e["alc_code"] for e in report["_plan"]]
         found = await db.scalars(select(ALC).where(ALC.alc_code.in_(codes)))
         alcs = {a.alc_code: a for a in found.all()}
+        moving = [alcs[e["alc_code"]].id for e in report["_plan"]
+                  if e["alc_code"] in alcs
+                  and alcs[e["alc_code"]].sbu_id != e["_sbu_id"]]
+        if moving:
+            await require_no_pending_participation(db, moving)
+        for sbu, dcu in report["_sbu_links"]:
+            sbu.dcu_id = dcu.id  # only SBUs that had no DCU; never re-parented
         for e in report["_plan"]:
             status = AlcStatus(e["status"])
             alc = alcs.get(e["alc_code"])

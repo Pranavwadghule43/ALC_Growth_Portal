@@ -2,7 +2,7 @@
 
 Approved rules: lifetime, VERIFIED-only activity metrics, ACTIVE partner rows, ACTIVE ALCs
 with a complete ALC -> SBU -> DCU -> RCU chain and at least one non-zero metric, regional
-percentile normalisation with equal 25% weights, ranked by exact score then ALC code. The
+percentile normalisation with five equal 20% weights, ranked by exact score then ALC code. The
 same regional result for ADMIN, DCU, SBU and ALC. One aggregate statement, no fan-out.
 """
 import itertools
@@ -41,7 +41,7 @@ ROLES = (
 )
 ITEM_KEYS = {
     "rank", "alc_id", "alc_code", "alc_name", "sbu", "dcu", "verified_leads",
-    "verified_admissions", "activities_done", "partners", "score",
+    "verified_admissions", "activities_done", "partners", "yearly_completed_count", "score",
 }
 _numbers = itertools.count(1)
 
@@ -157,7 +157,8 @@ async def test_response_exposes_only_leaderboard_fields(client, session, world):
     await session.commit()
     await as_user(client, "00010001", "StrongAlcPassA!")
     payload = await fetch(client)
-    assert set(payload) == {"period", "generated_at", "items"}
+    assert set(payload) == {"period", "generated_at", "items", "activity_year",
+                            "eligible_yearly_activities"}
     item = payload["items"][0]
     assert set(item) == ITEM_KEYS
     assert set(item["sbu"]) == {"code", "name"} and set(item["dcu"]) == {"code", "name"}
@@ -240,7 +241,7 @@ async def test_eligibility_requires_active_alc_and_complete_hierarchy(client, se
     payload = await fetch(client)
     # Centre B / C have no metrics (all-zero) and the four ineligible ALCs are excluded.
     assert [item["alc_code"] for item in payload["items"]] == ["00010001"]
-    assert payload["items"][0]["score"] == 100.0
+    assert payload["items"][0]["score"] == 80.0
 
 
 async def _branch(session, tag, *, rcu_active=True, dcu_active=True, sbu_active=True):
@@ -286,7 +287,7 @@ async def test_fully_active_hierarchy_with_performance_is_eligible(session, worl
     assert [i["alc_code"] for i in items] == ["00040004"]
     assert items[0]["sbu"]["code"] == "SBU 0004" and items[0]["dcu"]["code"] == "DCU_0004"
     # The only eligible ALC: every non-zero component is 100.
-    assert items[0]["score"] == 100.0
+    assert items[0]["score"] == 80.0
 
 
 async def test_inactive_units_do_not_affect_normalisation(session, world):
@@ -297,7 +298,7 @@ async def test_inactive_units_do_not_affect_normalisation(session, world):
     await session.commit()
     items = (await region_top10(session))["items"]
     assert [i["alc_code"] for i in items] == ["00030002", "00030001"]
-    assert [i["score"] for i in items] == [50.0, 25.0]
+    assert [i["score"] for i in items] == [40.0, 20.0]
 
 
 async def test_all_zero_alcs_are_excluded_and_not_used_for_normalisation(session, world):
@@ -309,7 +310,7 @@ async def test_all_zero_alcs_are_excluded_and_not_used_for_normalisation(session
     # denominator is 1 (not 4) and the higher-leads ALC scores 100 for leads.
     assert [i["alc_code"] for i in items] == ["00080002", "00080001"]
     # leads 100 / 0, admissions both 0 -> 0, activities both 1 -> 100, partners 0 -> 0.
-    assert [i["score"] for i in items] == [50.0, 25.0]
+    assert [i["score"] for i in items] == [40.0, 20.0]
 
 
 # --------------------------------------------------------------------------- #
@@ -351,28 +352,31 @@ def test_different_scales_contribute_equally():
     scores = {r.alc_code: r for r in rows}
     assert scores["A"].components == {
         "verified_leads": 100, "verified_admissions": 0, "activities_done": 0, "partners": 0,
+        "yearly_completed_count": 0,
     }
-    assert scores["A"].score == 25
-    assert scores["B"].score == 75  # 0 + 100 + 100 + 100, each x 0.25
-    assert scores["C"].score == 50  # 50 + 50 + 50 + 50, each x 0.25
+    assert scores["A"].score == 20
+    assert scores["B"].score == 60  # 0 + 100 + 100 + 100 + 0, each x 0.20
+    assert scores["C"].score == 40  # 50 + 50 + 50 + 50 + 0, each x 0.20
 
 
-def test_equal_weights_of_25_percent():
-    assert WEIGHTS == {metric: Fraction(1, 4) for metric in METRICS}
+def test_equal_weights_of_20_percent():
+    assert len(METRICS) == 5
+    assert WEIGHTS == {metric: Fraction(1, 5) for metric in METRICS}
     assert sum(WEIGHTS.values()) == 1
     for metric in METRICS:
         values = {m: 0 for m in METRICS}
         values[metric] = 1
         top, _ = score_rows([_row("X", **_short(values)), _row("Y")])
-        assert top.score == 25, metric
+        assert top.score == 20, metric
 
 
 def test_single_eligible_alc_end_to_end_components():
     (row,) = score_rows([_row("A", leads=5, admissions=0, done=1, partners=0)])
     assert row.components == {
         "verified_leads": 100, "verified_admissions": 0, "activities_done": 100, "partners": 0,
+        "yearly_completed_count": 0,
     }
-    assert row.score == 50
+    assert row.score == 40
 
 
 def test_ranking_uses_full_precision_before_alc_code():
@@ -396,14 +400,16 @@ def test_display_score_rounds_half_up_to_two_decimals():
 
 def _short(values: dict) -> dict:
     return {"leads": values["verified_leads"], "admissions": values["verified_admissions"],
-            "done": values["activities_done"], "partners": values["partners"]}
+            "done": values["activities_done"], "partners": values["partners"],
+            "yearly": values["yearly_completed_count"]}
 
 
-def _row(code, leads=0, admissions=0, done=0, partners=0, score=None) -> LeaderboardRow:
+def _row(code, leads=0, admissions=0, done=0, partners=0, yearly=0, score=None) -> LeaderboardRow:
     row = LeaderboardRow(
         alc_id=uuid.uuid4(), alc_code=code, alc_name=f"Centre {code}", sbu_code="SBU 4",
         sbu_name="SBU", dcu_code="DCU_NASHIK", dcu_name="DCU Nashik", verified_leads=leads,
         verified_admissions=admissions, activities_done=done, partners=partners,
+        yearly_completed_count=yearly,
     )
     if score is not None:
         row.score = score
@@ -440,9 +446,9 @@ async def test_more_than_ten_normalises_over_every_eligible_alc(session, world):
     assert [i["alc_code"] for i in items] == [f"0007{i:04d}" for i in range(12, 2, -1)]
     # Leads percentile uses all 12 ALCs (denominator 11); activities are all 1 -> 100.
     # The 10th row (leads 3) has 2 lower values: 100 * 2 / 11.
-    tenth = Fraction(100 * 2, 11) / 4 + Fraction(100, 4)
-    assert items[-1]["score"] == display_score(tenth) == 29.55
-    assert items[0]["score"] == 50.0
+    tenth = Fraction(100 * 2, 11) / 5 + Fraction(100, 5)
+    assert items[-1]["score"] == display_score(tenth) == 23.64
+    assert items[0]["score"] == 40.0
 
 
 # --------------------------------------------------------------------------- #
@@ -485,7 +491,7 @@ async def test_endpoint_statement_count_is_constant(client, session, world):
 
 def test_query_preaggregates_before_joining():
     sql = str(leaderboard.regional_metrics_query())
-    assert sql.count("GROUP BY") == 2  # one per pre-aggregated subquery, none outside
+    assert sql.count("GROUP BY") == 4  # four grouped subqueries, no per-ALC fan-out
     assert "verified_activity" in sql and "active_partners" in sql
 
 

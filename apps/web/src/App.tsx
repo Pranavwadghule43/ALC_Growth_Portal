@@ -50,6 +50,7 @@ const AdminUsers = lazy(() => import('./pages/AdminUsers'))
 const AdminAudit = lazy(() => import('./pages/AdminAudit'))
 const Reports = lazy(() => import('./pages/Reports'))
 const Settings = lazy(() => import('./pages/Settings'))
+const YearlyActivities = lazy(() => import('./pages/YearlyActivities'))
 
 function useMe() {
   return useQuery({ queryKey: ['me'], queryFn: () => api.get<User>('/auth/me'), retry: false })
@@ -107,6 +108,7 @@ export default function App() {
       <Route path="/portal/partners" element={<ByRole pages={{ DCU: <DcuPartners />, SBU: <SbuPartners />, ALC: <Partners /> }} />} />
       <Route path="/portal/reports" element={<ByRole pages={{ DCU: <DcuReports />, SBU: <PortalReports />, ALC: <PortalReports /> }} />} />
       <Route path="/portal/profile" element={<Profile />} />
+      <Route path="/portal/yearly-activities" element={<YearlyActivities />} />
       <Route path="/portal/alcs" element={<ByRole pages={{ DCU: <DcuAlcs />, SBU: <SbuAlcs /> }} />} />
       <Route path="/portal/alcs/:id" element={<ByRole pages={{ DCU: <DcuAlcDetail />, SBU: <SbuAlcDetail /> }} />} />
       <Route path="/portal/verification" element={<ByRole pages={{ DCU: <DcuActivities key="queue" queueOnly />, SBU: <SbuActivities key="queue" queueOnly /> }} />} />
@@ -133,6 +135,7 @@ export default function App() {
       <Route path="/admin/audit" element={<AdminAudit />} />
       <Route path="/admin/settings" element={<Settings />} />
       <Route path="/admin/profile" element={<Profile />} />
+      <Route path="/admin/yearly-activities" element={<YearlyActivities />} />
     </Route>
 
     <Route path="*" element={<Navigate to="/login" replace />} />

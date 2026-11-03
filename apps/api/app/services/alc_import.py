@@ -36,6 +36,7 @@ from app.models import (
     Task,
     User,
 )
+from app.services.yearly_membership import lock_membership, require_no_pending_participation
 
 # Only these columns are read. DCU (or anything else) is intentionally ignored.
 REQUIRED_COLUMNS = ("ALC Code", "ALC Name", "SBU")
@@ -249,6 +250,8 @@ async def validate(db: AsyncSession, records: list[MasterRow]) -> dict:
 # Import (transactional; aborts without writing if validation fails)
 # --------------------------------------------------------------------------- #
 async def perform(db: AsyncSession, records: list[MasterRow]) -> dict:
+    # Imports are also hierarchy writers: serialize them with participation snapshots.
+    await lock_membership(db)
     report = await validate(db, records)
     if report["counts"]["invalid"] > 0:
         raise ImportBlocked(
@@ -266,6 +269,12 @@ async def perform(db: AsyncSession, records: list[MasterRow]) -> dict:
 
     sbu_map = await _sbu_by_code(db)
     existing = await _existing_alcs(db, {r.alc_code for r in records})
+    moving = [existing[r.alc_code].id for r in records
+              if r.alc_code in existing
+              and existing[r.alc_code].sbu_id != sbu_map[r.sbu.strip().lower()].id]
+    # Validate the entire batch before creating/renaming any ALC.
+    if moving:
+        await require_no_pending_participation(db, moving)
     created = updated = unchanged = 0
     for r in records:
         sbu = sbu_map[r.sbu.strip().lower()]

@@ -46,11 +46,11 @@ async function mount(u: User, path: string) {
 
 const expected: Record<Role, [string, string][]> = {
   ALC: [['Dashboard', '/portal'], ['Partners', '/portal/partners'], ['Add Activity', '/portal/activities/new'], ['My Activities', '/portal/activities'], ['Tasks', '/portal/tasks'],
-    ['Growth Challenge', '/portal/challenge'], ['Performance', '/portal/performance'], ['Growth Resources', '/portal/resources'], ['Profile', '/portal/profile']],
-  SBU: [['Dashboard', '/portal'], ['ALCs', '/portal/alcs'], ['Partners', '/portal/partners'], ['Activities', '/portal/activities'], ['Verification', '/portal/verification'], ['Reports', '/portal/reports'], ['Profile', '/portal/profile']],
-  DCU: [['Dashboard', '/portal'], ['SBUs', '/portal/sbus'], ['ALCs', '/portal/alcs'], ['Partners', '/portal/partners'], ['Activities', '/portal/activities'], ['Verification', '/portal/verification'], ['Reports', '/portal/reports'], ['Profile', '/portal/profile']],
+    ['Growth Challenge', '/portal/challenge'], ['Performance', '/portal/performance'], ['Growth Resources', '/portal/resources'], ['Profile', '/portal/profile'], ['Yearly Activities', '/portal/yearly-activities']],
+  SBU: [['Dashboard', '/portal'], ['ALCs', '/portal/alcs'], ['Partners', '/portal/partners'], ['Activities', '/portal/activities'], ['Verification', '/portal/verification'], ['Reports', '/portal/reports'], ['Profile', '/portal/profile'], ['Yearly Activities', '/portal/yearly-activities']],
+  DCU: [['Dashboard', '/portal'], ['SBUs', '/portal/sbus'], ['ALCs', '/portal/alcs'], ['Partners', '/portal/partners'], ['Activities', '/portal/activities'], ['Verification', '/portal/verification'], ['Reports', '/portal/reports'], ['Profile', '/portal/profile'], ['Yearly Activities', '/portal/yearly-activities']],
   ADMIN: [['Dashboard', '/admin'], ['Partners', '/admin/partners'], ['Verification Queue', '/admin/verification'], ['Activities', '/admin/activities'], ['ALCs', '/admin/alcs'], ['SBUs', '/admin/sbus'],
-    ['Growth Challenge', '/admin/challenge'], ['Reports', '/admin/reports'], ['Users', '/admin/users'], ['Audit Logs', '/admin/audit'], ['Settings', '/admin/settings']],
+    ['Growth Challenge', '/admin/challenge'], ['Reports', '/admin/reports'], ['Users', '/admin/users'], ['Audit Logs', '/admin/audit'], ['Settings', '/admin/settings'], ['Yearly Activities', '/admin/yearly-activities']],
 }
 const home = (role: Role) => (role === 'ADMIN' ? '/admin' : '/portal')
 
