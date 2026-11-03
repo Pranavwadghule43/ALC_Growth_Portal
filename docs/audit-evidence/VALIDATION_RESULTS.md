@@ -2,6 +2,40 @@
 
 All application tests use synthetic fixtures. No test ran against the configured development/production database. Counts below overlap; do not add them together as independent test coverage.
 
+## Current P1-A session revocation remediation
+
+Phase base is85250df on `dev1/production-blockers-remediation`. Yearly Activities is already
+committed at this base and remains preserved. New finding status: **SEC-02 resolved in the
+tested implementation**, not deployed. Overall portal readiness remains **NOT READY**.
+
+| Check | Actual result | Scope / limitation |
+| --- | --- | --- |
+| Targeted revocation acceptance |29 passed | Replaces2 old weakness-evidence cases; includes logout, both devices reset/change, forced-change non-resurrection, replay, required claims, ownership, expiry, cleanup and query path |
+| Auth stability/password-security regression |22 passed |15 stability +7 password-security cases; old refresh expectations updated for secure family replay/replacement policy |
+| Combined targeted run |51 passed in78.38s |1 deliberate wrong-algorithm JWT-construction warning; no error/warning suppression |
+| New migration tests |4 passed |3 SQLite graph/legacy upgrade/downgrade +1 real PostgreSQL full chain, existing user/hash/refresh and Yearly preservation |
+| New concurrency/persistence tests |6 passed |Real PostgreSQL separate transactions; refresh/logout/reset/change, competing refresh, separate engine and login/reset |
+| Combined migration/concurrency run |10 passed in12.34s |Only newly generated private schemas in a new loopback test container; schemas/container removed afterward |
+| Full backend regression |902 passed,67 skipped,1 warning in612.32s |All source changes were complete before this run; raw skip reasons included; new PostgreSQL cases passed separately above |
+| Application/tests/new cleanup script/new migration Ruff | Passed |No changed-source lint findings |
+| Full repository Ruff | Failed:11 unchanged baseline findings |Existing create_admin.py/create_alc_users.py import order and9 demo_smoke.py long lines; not suppressed |
+| Frontend tests/lint/build | Not rerun in P1-A |No frontend files/API JSON contracts changed; prior phase results below remain historical |
+| Auth validation query count |0 additional round trips |Measured comparison with original user/hierarchy load; session join appears in exactly1 existing statement |
+| Git preservation/integrity |Both working-tree and real-index diff checks passed; index empty |No checkout/reset/stash/commit/push/deploy; phase-only P1A manifest/status separate from Yearly history |
+
+Raw P1-A logs and phase-only manifest use the `P1A_` prefix in this directory. Migration
+head0009 follows0008. No production/dev data or configuration was modified. New code rejects
+legacy sid-less access and NULL-family refresh credentials; coordinated rollout/fresh sign-in
+and scheduled expiry cleanup are operational prerequisites, not performed here. No actual
+process restart/multi-host deployment/load test was conducted; independent persistent engine
+visibility and real database lock behavior were tested.
+
+## Historical Yearly Activities phase
+
+The results below precede P1-A. In particular, the two former HTTP200 weakness reproductions
+are retained only as historical evidence and have now been replaced by secure acceptance
+tests; they no longer describe current token-validation behavior.
+
 | Check | Actual result | Scope / limitation |
 | --- | --- | --- |
 | Complete backend `.venv/Scripts/python.exe -m pytest -q` |869 passed,60 skipped in572.48s | SQLite/mocks; existing optional platform/infrastructure skips, no failures; raw output in backend-pytest.txt |

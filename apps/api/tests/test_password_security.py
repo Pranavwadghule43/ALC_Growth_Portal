@@ -63,10 +63,9 @@ async def test_sbu_reset_ends_existing_alc_sessions(client, seeded):
     await sbu_resets_alc_a(client, seeded)
 
     restore(client, old_browser)
-    # Immediately: the old access token (a stateless JWT, still unexpired) is refused on every
-    # protected endpoint because the account now requires a password change...
+    # Persistent family revocation rejects the old access token before role guards.
     blocked = await client.get("/api/portal/dashboard")
-    assert blocked.status_code == 403 and blocked.json()["detail"] == "Password change required"
+    assert blocked.status_code == 401
     # ...and the old refresh token is revoked, so the session cannot be renewed.
     assert (await client.post("/api/auth/refresh")).status_code == 401
 

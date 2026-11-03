@@ -12,11 +12,12 @@ Date:2026-11-03. Overall status: **NOT READY**. READY applies only to stated rep
 | Five equal20% scoring components | READY | Shared exact Fraction ranking; yearly-only eligibility; selected year; preserved lifetime definitions/filter ranks |
 | Role/object authorization | READY WITH CONDITIONS | Server-scoped APIs and direct role/isolation regressions; no external penetration test certification |
 | Authentication primitives/availability | READY WITH CONDITIONS | Existing hashing/JWT/rotation/inactive/forced-change tests; deployment HTTPS required |
-| Immediate logout/reset access revocation | NOT READY | Copied JWT acceptance reproduced until expiry; persistent revocation design or explicit risk acceptance required |
+| Immediate logout/reset access revocation | READY WITH CONDITIONS | P1-A resolved:29 acceptance cases plus PostgreSQL races; apply0009 with coordinated code rollout and fresh sign-in; no production deployment performed |
+| Persistent session expiry/replay containment | READY WITH CONDITIONS | Family replay revocation and absolute expiry implemented; schedule bounded expired-family/legacy cleanup; competing refreshes can require sign-in |
 | Credential-safe validation errors | READY | Recursive redaction + malformed JSON protection + API regressions |
 | Cookie/CSRF/CORS/proxy configuration | READY WITH CONDITIONS | Repository validation exists; actual domain/HTTPS/startup/proxy trust must be verified |
 | Dependency security | NOT READY | npm21 affected packages; production-only Zod high; pip16 entries/5 packages; triage and tested upgrades outstanding |
-| Database integrity/migration correctness | READY WITH CONDITIONS | SQLite and disposable PostgreSQL chain/constraints pass; representative restored-data rehearsal required |
+| Database integrity/migration correctness | READY WITH CONDITIONS | Yearly0008 and auth0009 SQLite/disposable PostgreSQL tests pass, legacy data retained; restored-data rehearsal required |
 | PostgreSQL production settings/pool budget | NOT VERIFIED | Worker×30 limit, max_connections reserve, timeouts, role/TLS and real query plans need environment checks |
 | Concurrent marking/finalization correctness | READY | Real PostgreSQL waiting-mark/finalization and parallel-mark tests in generated private schemas |
 | Concurrent login/import/report throughput | NOT VERIFIED | Functional/race unit coverage is not representative throughput evidence |
@@ -25,9 +26,9 @@ Date:2026-11-03. Overall status: **NOT READY**. READY applies only to stated rep
 | Live Redis failure/recovery | NOT VERIFIED | Require isolated dependency stop/start and monitoring |
 | Private evidence delivery implementation | READY WITH CONDITIONS | Authenticated streaming, file/path checks and timeout tests; upload resource sizing remains required |
 | Object store policy/IAM/TLS/restore | NOT VERIFIED | Inspect actual private bucket/service account/encryption/lifecycle and restore |
-| Frontend tests/lint/typecheck/build | READY |136 component/client tests, lint clean, production URL build succeeds |
+| Frontend tests/lint/typecheck/build | READY | Prior phase136 tests/lint/build passed; no frontend change or rerun in backend-only P1-A |
 | Live browser/mobile/accessibility/E2E | NOT VERIFIED | No physical viewport/assistive-tech/full-stack browser validation performed |
-| Backend regression | READY WITH CONDITIONS | See final full-suite results; skipped opt-in integration cases and baseline lint debt remain explicit |
+| Backend regression | READY WITH CONDITIONS | P1-A902 passed/67 skipped; new PostgreSQL auth cases passed separately; optional/POSIX skips and existing lint debt explicit |
 | Complete backend Ruff gate | NOT READY |11 pre-existing findings in unchanged provisioning/demo scripts; new/changed source checks clean |
 | 800 registered-user operational capacity | NOT VERIFIED | Population microbenchmark alone cannot establish deployed session/request capacity |
 | 25/50/100/200 VU normal-load targets | NOT VERIFIED | Guarded repeatable k6 scripts delivered; representative run not performed |

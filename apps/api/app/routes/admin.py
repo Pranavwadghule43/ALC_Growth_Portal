@@ -43,6 +43,7 @@ from app.models import (
     ActivityReview,
     ActivityRevision,
     AuditLog,
+    AuthSession,
     ChallengeProgress,
     GrowthChallenge,
     Notification,
@@ -1106,7 +1107,8 @@ async def update_user(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    user = await db.get(User, user_id)
+    user = await db.scalar(select(User).where(User.id == user_id).with_for_update()
+                           .execution_options(populate_existing=True))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if payload.is_active is not None:
@@ -1138,7 +1140,8 @@ async def delete_user(
     historical activities, evidence, reviews, partners, tasks, challenge history and reports
     are preserved (authorship references are detached, not deleted). ADMIN accounts and the
     admin's own account can never be deleted."""
-    user = await db.get(User, user_id)
+    user = await db.scalar(select(User).where(User.id == user_id).with_for_update()
+                           .execution_options(populate_existing=True))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if user.role == Role.ADMIN:
@@ -1156,6 +1159,7 @@ async def delete_user(
     # Session cleanup: revoke every refresh token and drop notifications so the account
     # immediately loses access and an old refresh token can never be reused.
     await db.execute(delete(RefreshToken).where(RefreshToken.user_id == user_id))
+    await db.execute(delete(AuthSession).where(AuthSession.user_id == user_id))
     await db.execute(delete(Notification).where(Notification.user_id == user_id))
 
     # Detach authorship from historical rows so they survive (never cascade-delete business

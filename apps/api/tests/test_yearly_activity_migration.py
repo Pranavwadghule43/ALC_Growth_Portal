@@ -51,7 +51,9 @@ def test_revision_upgrade_downgrade_preserves_unrelated_data(legacy):
 
     config = Config()
     config.set_main_option("script_location", str(API_DIR / "alembic"))
-    assert ScriptDirectory.from_config(config).get_heads() == [REVISION]
+    script = ScriptDirectory.from_config(config)
+    assert script.get_heads() == ["20261103_0009"]
+    assert script.get_revision("20261103_0009").down_revision == REVISION
     assert MIGRATION.down_revision == "20261002_0007"
     with legacy.begin() as conn:
         before = set(sa.inspect(conn).get_table_names())
@@ -138,7 +140,7 @@ async def test_postgres_real_chain_and_composite_foreign_keys():
             created = True
         async with engine.begin() as conn:
             await conn.execute(sa.text(f'SET LOCAL search_path TO "{schema}"'))
-            await conn.run_sync(migrate, "upgrade", "head")
+            await conn.run_sync(migrate, "upgrade", REVISION)
             assert await conn.scalar(sa.text("SELECT version_num FROM alembic_version")) == REVISION
             await conn.execute(sa.text("CREATE TABLE migration_sentinel (value text)"))
             await conn.execute(sa.text("INSERT INTO migration_sentinel VALUES ('preserved')"))
@@ -149,7 +151,7 @@ async def test_postgres_real_chain_and_composite_foreign_keys():
             for table in TABLES:
                 assert not await conn.scalar(sa.text("SELECT to_regclass(:name) IS NOT NULL"),
                                              {"name": table.name})
-            await conn.run_sync(migrate, "upgrade", "head")
+            await conn.run_sync(migrate, "upgrade", REVISION)
             assert await conn.scalar(sa.text("SELECT value FROM migration_sentinel")) == "preserved"
             assert await conn.scalar(
                 sa.text("SELECT count(*) FROM yearly_activity_definitions")) == 0

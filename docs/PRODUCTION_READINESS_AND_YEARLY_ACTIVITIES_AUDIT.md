@@ -6,7 +6,11 @@ Audit date: **2026-11-03 (Asia/Kolkata)**. Overall release decision: **NOT READY
 
 - Original branch: `dev1/phase5b-production-runbook`.
 - Integrated base: `3aaec473db8c873779a4bd710d000d7095853772`.
-- Working branch: `codex/feature-dynamic-yearly-activities`.
+- Yearly implementation branch at the original audit: `codex/feature-dynamic-yearly-activities`.
+- P1-A current branch: `dev1/production-blockers-remediation`, phase base/unchanged HEAD
+  `85250dfcd5c936182bdce9fdf18d685ddbc38b71`, which already commits the Yearly Activities work.
+  The pasted P1-A brief's older uncommitted/base description was verified against Git and
+  not assumed. No patch was reapplied and no branch was changed.
 - `git fetch origin` succeeded after the initial sandbox Git-directory permission failure; origin's runbook branch contains exactly this base.
 - Existing untracked `alc-growth-portal-ui.png` was preserved and excluded from the patch.
 - Verified integrated milestones: `347076b` regional scores; `71e2026` production configuration; `6b1995a` authenticated evidence delivery; `906a0f7` backup/recovery tooling; `9e30d97` health/logging; `ff0066d` bounded S3 requests; `3aaec47` deployment runbook. No older milestone was substituted for HEAD.
@@ -23,7 +27,15 @@ ADMIN manages hierarchy, users, account provisioning/imports, review, partners, 
 
 Source and existing tests cover Argon2id hashing; bounded asynchronous hash concurrency; role resolution from the database; HS256/type/expiry/UUID JWT validation; rotating hashed refresh tokens; atomic refresh consumption; inactive-account/hierarchy rejection; forced password changes; password reset/change; cookie configuration; CSRF and Redis fallback. Auth cookies are HttpOnly/SameSite=Lax and production configuration requires Secure. No auth token persistence in frontend localStorage/sessionStorage was found. Login/refresh rely on JSON/CORS/SameSite rather than the unsafe-operation CSRF dependency.
 
-**Unresolved P1:** copied access JWTs remain usable after logout until expiry and can become usable again after a password reset's forced-change flag is cleared. Two isolated direct API tests reproduce this behavior; old refresh tokens are rejected. These tests are weakness evidence, not security acceptance. A persistent session/token-version design or explicit acceptance of the access lifetime is required before claiming immediate revocation. Refresh family compromise detection is also absent. Detailed controls and evidence: [security audit](SECURITY_AUDIT_EVIDENCE.md).
+**P1-A resolved in implementation:** required JWT `sid` references a persistent active,
+unexpired `auth_sessions` row joined into the existing user lookup. Current-family logout
+invalidates copied access/refresh credentials; reset/change revoke all old families;
+self-change issues replacement cookies. Completing forced change cannot revive a revoked
+family. Consumed-refresh replay revokes its whole family, including successors.29 acceptance
+tests,51 targeted auth tests in total, and10 migration/PostgreSQL race tests passed. See the
+[phase report](SESSION_REVOCATION_REMEDIATION.md), [security evidence](SECURITY_AUDIT_EVIDENCE.md)
+and final validation record for limits and full-suite results. No deployed fix is claimed;
+0009/code rollout and cleanup scheduling remain deployment prerequisites.
 
 ## 5. Authorization matrix
 
@@ -44,7 +56,7 @@ Out-of-scope runs/participants return404. Role-denied writes return403. Authenti
 | Finding / module | Severity | Evidence / impact | Remediation and validation | Deployment impact |
 | --- | --- | --- | --- | --- |
 | Credential input echoed in422, `app/main.py` | P2, fixed | Old Pydantic error handler echoed password/model inputs | Selective recursive credential redaction; malformed JSON raw input omitted; normal feedback retained; direct regression tests | Response hardening, no data migration |
-| Copied JWT revocation, auth/dependencies/sessions | P1 unresolved | Direct API reproduction after logout and reset/change, see section4 | Organizational access-lifetime acceptance or persistent revocation design | Release decision required |
+| Copied JWT revocation, auth/dependencies/sessions | P1 resolved in P1-A | Prior direct API reproduction replaced by29 HTTP401/claims/retention/query acceptance cases | Persistent families, joined validation, scoped logout/global change/reset, replay containment; PostgreSQL races pass | Requires0009/coordinated new-code rollout and fresh sign-in; not deployed |
 | Frontend upload Promise unresolved on HTML/malformed proxy response, `lib/api.ts` | P2, fixed | Uncaught JSON.parse in XHR completion | Controlled rejection fallback and regression test | User receives an error instead of hanging upload |
 | React render recovery absent, `main.tsx` | P2, fixed | No root ErrorBoundary in baseline | Root ErrorBoundary with recovery test | Rendering failure can show recovery UI |
 | Membership transfer/import bypass, hierarchy/import services | P1 integration risk, fixed | Direct FK import paths could bypass new snapshot policy | Shared membership serialization and pending-participation guard before reassignment; regression tests | Pending participation must finalize before move/import |
@@ -63,6 +75,11 @@ Three normalized additive tables:
 
 History FKs use RESTRICT; actor FKs use SET NULL to preserve history on account deletion. Foreign-key lookup indexes and uniqueness support the application joins. No activity definitions or outcomes are seeded. Constraints supplement server-side scope/state validation; direct database writes by privileged operators remain outside API authorization.
 
+P1-A separately adds `auth_sessions` (UUID primary key, indexed user/expiry, created/revoked
+timestamps, expiry-order check) and nullable indexed `refresh_tokens.session_id` with CASCADE.
+These are authentication state, not new Yearly business tables. Legacy credentials are
+preserved but cannot authenticate without the new family binding.
+
 ## 8. Migration details and executed evidence
 
 Revision `20261103_0008`, after `20261002_0007`, creates only the three tables. Existing tables/production data are untouched. Established current-metadata/checkfirst migration conventions were retained. `alembic/env.py` now accepts a supplied connection so tests can run inside a unique schema without altering public/application schemas.
@@ -70,6 +87,13 @@ Revision `20261103_0008`, after `20261002_0007`, creates only the three tables. 
 Executed SQLite upgrade/downgrade/re-upgrade tests verify table/model checks/indexes, duplicate rejection, empty seeded state and unrelated-row preservation. Executed PostgreSQL17 test runs the actual full Alembic chain, downgrade to0007, re-upgrade, preserves a sentinel, inspects six completion FKs, and rejects mismatched run/definition identity. All PostgreSQL work used newly generated schemas in a newly created loopback-only disposable container; cleanup removed only those schemas. A proposed public-schema reset test was rejected by automatic approval review; the safe schema-isolated replacement was approved and passed. Legacy opt-in tests that reset public were not executed.
 
 Downgrade drops the new tables and their history. It is tested only on disposable data; production rollback must prefer application rollback/forward repair with backups, and requires a reviewed retention decision. No production migration was applied. Because old migrations import live metadata, future changes must continue reviewing fresh-install versus incremental paths.
+
+Current migration head is `20261103_0009`, after0008. New SQLite tests and a real PostgreSQL
+full-chain downgrade/re-upgrade verify existing users/password hashes/legacy refresh rows
+survive, new session linkage starts NULL for old rows, indexes/FK match, and Yearly tables
+remain. No old sessions are silently adopted; legacy access/refresh credentials fail closed
+after the new code starts. No migration on an existing development/production database was
+run. See the P1-A report for coordinated rollout and security-sensitive rollback guidance.
 
 ## 9. Dynamic registry and deduplication
 
@@ -112,6 +136,13 @@ Lifetime activity/partner pre-aggregation is retained. A grouped annual completi
 ## 16. Concurrency and transaction safety
 
 Run-row FOR UPDATE serializes marking/finalization; snapshot uniqueness and canonical code uniqueness enforce duplicate protection. Snapshot activation/reassignment/import serialize membership changes with ordered regional-root locks. Finalization/audit and marking/audit commit together. Request session closure rolls back failed requests. Actual PostgreSQL concurrency tests verify a waiting mark returns409 after finalization commits, the barrier changes only after commit, and parallel YES/NO updates preserve one row/two attributable audits. Lock behavior follows [PostgreSQL explicit locking](https://www.postgresql.org/docs/17/explicit-locking.html). Contention throughput, concurrent registration/import/login/report workloads at realistic infrastructure scale remain unmeasured; root membership locks are deliberately conservative for rare hierarchy/schedule operations.
+
+P1-A auth mutations use per-user→family→refresh row locks, not regional/global locks. Six
+real PostgreSQL tests cover refresh/logout/reset/change races, simultaneous refresh replay,
+an independent engine observing revocation and stale verified login versus reset. Ordinary
+protected-request validation adds zero SQL round trips and holds no long auth row lock.
+An already validated in-flight business request can finish; validation after revocation
+commit rejects. These are correctness tests, not representative throughput evidence.
 
 ## 17. PostgreSQL configuration and connections
 
@@ -161,22 +192,30 @@ APP_ENV validation, secret/default rejection, Secure cookies, exact HTTPS CORS, 
 
 Before any separately authorized deployment: resolve/accept P1 findings, review the patch and membership/late-participant policy, test dependencies, snapshot DB/storage, rehearse schema upgrade on representative restored data, perform isolated load/soak and failure recovery, set worker/DB budgets and proxy body/timeouts/HTTPS, verify private bucket/firewall, install monitoring, and rehearse restore/application rollback. Apply migration once as a release step, not from each worker. Keep new schema/history through application rollback where possible; do not casually downgrade0008. This task intentionally stops before deployment/commit/push.
 
+For P1-A, coordinate/drain all old auth workers, apply0009 once and run only the new auth
+code, require fresh sign-in, verify revocation and schedule bounded expiry cleanup. Mixed
+auth versions are unsupported. Family lifetime is absolute configured refresh days; replay
+can require sign-in after competing refreshes. Rolling back old auth code restores the
+resolved vulnerability; retain schema/forward-fix or use a reviewed forced-reauthentication
+plan. No production cleanup, signing-key change or deployment was performed here.
+
 ## 28. Outstanding blockers
 
-1. Explicit copied-access-token revocation decision/remediation.
-2. Advisory triage and tested dependency remediation/re-audit.
-3. Representative isolated capacity/load and live failure-recovery tests.
-4. Fresh full DB/object-store restore drill including yearly history.
-5. Verified production HTTPS/proxy/firewall/IAM/secrets/worker/connection/monitoring configuration.
-6. Organizational acceptance of blocked unfinished transfers, activation population cutoff, and inactive/late DCU exception handling; no silent waiver tool exists.
-7. Live browser/full-stack/mobile/accessibility acceptance and existing baseline lint debt.
+1. Advisory triage and tested dependency remediation/re-audit.
+2. Representative isolated capacity/load and live failure-recovery tests.
+3. Fresh full DB/object-store restore drill including yearly history and new auth state.
+4. Verified production HTTPS/proxy/firewall/IAM/secrets/worker/connection/monitoring configuration.
+5. Organizational acceptance of blocked unfinished transfers, activation population cutoff, and inactive/late DCU exception handling; no silent waiver tool exists.
+6. Live browser/full-stack/mobile/accessibility acceptance and existing baseline lint debt.
+
+The copied-JWT finding is resolved by P1-A's tested implementation, not an active unresolved
+blocker. Deployment prerequisites for that fix are separate from the remaining blockers.
 
 ## 29. Risk register
 
 | Priority | Risk | Current disposition |
 | --- | --- | --- |
 | P0 | Verified critical exploitable source defect | None established by this review; no blanket security guarantee |
-| P1 | Copied JWT survives logout/password lifecycle | Reproduced, unresolved; release decision |
 | P1 | Advisories including critical dev tooling/high browser library | Recorded, no reachability certification or breaking upgrade |
 | P1 | Capacity/connection/upload memory limits and real recovery unverified | Isolated load/staging prerequisites |
 | P1 | Restore/private infrastructure/monitoring not verified | Operational release blockers |
@@ -189,12 +228,28 @@ Before any separately authorized deployment: resolve/accept P1 findings, review 
 
 ## 30. Actual test results
 
+P1-A current validation:29 revocation acceptance +22 auth/password regression cases passed
+(51 combined);4 new migration +6 real PostgreSQL race/persistence cases passed (10 combined).
+No extra authenticated-request round trip was added. Changed app/tests/maintenance/migration
+Ruff passes; full Ruff still has11 unchanged script findings. **P1-A complete backend:
+902 passed,67 skipped,1 warning in612.32s**; all source changes preceded the run. Raw results
+and skip reasons are in the P1-A validation record. Frontend is
+unchanged and was not rerun. The paragraph below records historical Yearly-phase evidence,
+including the old vulnerability reproductions which P1-A has replaced.
+
 Final consolidated results are recorded in [validation evidence](audit-evidence/VALIDATION_RESULTS.md). **Complete backend run:869 passed,60 skipped in572.48s.** Existing skip conditions cover Windows/POSIX backup/permission/timezone behavior, absent optional PostgreSQL/Redis environment variables and unavailable real-data fixtures; skips were not added to bypass failures. This run began before the final import/per-RCU corrections; the final affected60-test regression verified those source changes and additional cases. Final combined migration/concurrency check:5 passed (including actual PostgreSQL); actual Redis check:1 passed. Frontend:136 passed, lint/typecheck/build passed. All app/tests/new performance-script Ruff checks pass; full repository Ruff retains11 findings in unchanged provisioning/demo scripts. Targeted groups overlap the full suite and must not be summed. Tests reproducing JWT weakness do not count as security acceptance. Raw backend/PostgreSQL/lint output is included in `audit-evidence`.
 
 ## 31. Files and patch
 
-`audit-evidence/CHANGED_FILES.txt` contains the complete intended new/modified file manifest. Reviewable binary-safe patch and SHA256/size/base/check results are recorded in `.local/yearly-activities-patch-details.json` and the final response. Patch excludes the existing screenshot, secrets, `.env`, `.local`, environments, dependencies, build output and production data. Audit advisory JSON and synthetic query measurements are intentionally included as review evidence.
+`audit-evidence/CHANGED_FILES.txt` records the historical Yearly phase manifest; its recovery
+patch was not reapplied. Current P1-A changes are listed separately in
+`audit-evidence/P1A_CHANGED_FILES.txt` and the phase report. Existing Yearly business/scoring/
+frontend files are preserved; only migration-head/auth-test integration is mechanical.
 
 ## 32. Final Git state
 
-No commit/push/deployment. HEAD remains `3aaec473db8c873779a4bd710d000d7095853772`; working branch `codex/feature-dynamic-yearly-activities`. Changes remain unstaged in the shared checkout; pre-existing screenshot is preserved. Final `git status --short`, `git diff --check`, real-index `git diff --cached --check`, patch application checks and manifest are captured alongside validation results. A temporary alternate index is used only for binary-safe patch export; the real index remains unchanged.
+P1-A made no commit/push/deployment/branch change/reset/stash. HEAD remains phase base
+`85250dfcd5c936182bdce9fdf18d685ddbc38b71` on `dev1/production-blockers-remediation`.
+The already-committed Yearly implementation and untracked screenshot are preserved.
+P1-A changes remain unstaged. Final status/checks and phase-only manifest are captured
+separately under `audit-evidence/P1A_*`; historical Yearly status/patch evidence is retained.

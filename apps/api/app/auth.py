@@ -4,6 +4,7 @@ import secrets
 import uuid
 import weakref
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
 
 import anyio
 import jwt
@@ -75,11 +76,17 @@ def login_password_hash(user) -> str:
     return user.password_hash if user is not None else DUMMY_PASSWORD_HASH
 
 
-def create_access_token(user_id: uuid.UUID) -> str:
+class AccessIdentity(NamedTuple):
+    user_id: uuid.UUID
+    session_id: uuid.UUID
+
+
+def create_access_token(user_id: uuid.UUID, session_id: uuid.UUID) -> str:
     now = datetime.now(timezone.utc)
     return jwt.encode(
         {
             "sub": str(user_id),
+            "sid": str(session_id),
             "type": "access",
             "iat": now,
             "exp": now + timedelta(minutes=settings.access_token_minutes),
@@ -89,11 +96,19 @@ def create_access_token(user_id: uuid.UUID) -> str:
     )
 
 
-def decode_access_token(token: str) -> uuid.UUID:
-    payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+def decode_access_token(token: str) -> AccessIdentity:
+    payload = jwt.decode(
+        token, settings.secret_key, algorithms=["HS256"],
+        options={"require": ["sub", "sid", "type", "iat", "exp"]},
+    )
     if payload.get("type") != "access":
         raise jwt.InvalidTokenError("Invalid token type")
-    return uuid.UUID(payload["sub"])
+    if not isinstance(payload["sub"], str) or not isinstance(payload["sid"], str):
+        raise jwt.InvalidTokenError("Invalid token identity")
+    try:
+        return AccessIdentity(uuid.UUID(payload["sub"]), uuid.UUID(payload["sid"]))
+    except ValueError:
+        raise jwt.InvalidTokenError("Invalid token identity") from None
 
 
 def new_refresh_token() -> tuple[str, str]:

@@ -1,0 +1,142 @@
+I001 [*] Import block is un-sorted or un-formatted
+  --> apps\api\scripts\create_admin.py:1:1
+   |
+ 1 | / import argparse
+ 2 | | import asyncio
+ 3 | | import getpass
+ 4 | | import os
+ 5 | |
+ 6 | | from dotenv import load_dotenv
+ 7 | |
+ 8 | | from sqlalchemy import select
+ 9 | |
+10 | | from app.auth import hash_password
+11 | | from app.database import SessionLocal
+12 | | from app.enums import Role
+13 | | from app.models import User
+   | |___________________________^
+help: Organize imports
+  |
+6 | from dotenv import load_dotenv
+  -
+7 | from sqlalchemy import select
+  |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> apps\api\scripts\create_alc_users.py:1:1
+   |
+ 1 | / import asyncio
+ 2 | | import os
+ 3 | |
+ 4 | | from dotenv import load_dotenv
+ 5 | |
+ 6 | | from sqlalchemy import select
+ 7 | |
+ 8 | | from app.auth import hash_password
+ 9 | | from app.database import SessionLocal
+10 | | from app.enums import Role
+11 | | from app.models import ALC, User
+   | |________________________________^
+help: Organize imports
+  |
+4 | from dotenv import load_dotenv
+  -
+5 | from sqlalchemy import select
+  |
+
+E501 Line too long (122 > 100)
+  --> apps\api\scripts\demo_smoke.py:14:101
+   |
+12 |         b"<< /Type /Catalog /Pages 2 0 R >>",
+13 |         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+14 |         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^
+15 |         b"<< /Length 56 >>\nstream\nBT /F1 18 Tf 72 760 Td (ALC demo evidence) Tj ET\nendstream",
+16 |         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+   |
+
+E501 Line too long (103 > 100)
+  --> apps\api\scripts\demo_smoke.py:27:101
+   |
+25 |     for offset in offsets[1:]:
+26 |         pdf.extend(f"{offset:010d} 00000 n \n".encode())
+27 |     pdf.extend(f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
+   |                                                                                                     ^^^
+28 |     return bytes(pdf)
+   |
+
+E501 Line too long (124 > 100)
+  --> apps\api\scripts\demo_smoke.py:32:101
+   |
+31 | async def login(client: httpx.AsyncClient, identifier: str, password: str, portal: str) -> None:
+32 |     response = await client.post("/api/auth/login", json={"identifier": identifier, "password": password, "portal": portal})
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^
+33 |     response.raise_for_status()
+34 |     client.headers["X-CSRF-Token"] = client.cookies["csrf_token"]
+   |
+
+E501 Line too long (234 > 100)
+  --> apps\api\scripts\demo_smoke.py:39:101
+   |
+37 | …
+38 | …
+39 | …yncClient(base_url="http://localhost:8000", timeout=20) as admin, httpx.AsyncClient(base_url="http://localhost:8000", timeout=20) as other:
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+40 | …
+41 | …
+   |
+
+E501 Line too long (151 > 100)
+  --> apps\api\scripts\demo_smoke.py:58:101
+   |
+56 | …
+57 | …
+58 | …ctivity_id}/evidence", files={"files": ("demo-proof.pdf", sample_pdf(), "application/pdf")})
+   |                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+59 | …
+60 | …
+   |
+
+E501 Line too long (149 > 100)
+  --> apps\api\scripts\demo_smoke.py:73:101
+   |
+71 | …
+72 | …or item in queue.json()["items"])
+73 | …ies/{activity_id}/request-correction", json={"remark": "Please clarify the pilot outcome"})
+   |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+74 | …
+75 | …REQUIRED"
+   |
+
+E501 Line too long (135 > 100)
+  --> apps\api\scripts\demo_smoke.py:76:101
+   |
+74 |         correction.raise_for_status()
+75 |         assert correction.json()["status"] == "CORRECTION_REQUIRED"
+76 |         edited = await alc.patch(f"/api/portal/activities/{activity_id}", json={**payload, "outcome": "Pilot scheduled and confirmed"})
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+77 |         edited.raise_for_status()
+78 |         resubmitted = await alc.post(f"/api/portal/activities/{activity_id}/submit")
+   |
+
+E501 Line too long (120 > 100)
+  --> apps\api\scripts\demo_smoke.py:81:101
+   |
+79 |         resubmitted.raise_for_status()
+80 |         assert resubmitted.json()["status"] == "RESUBMITTED"
+81 |         verified = await admin.post(f"/api/admin/activities/{activity_id}/verify", json={"remark": "Evidence accepted"})
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^
+82 |         verified.raise_for_status()
+83 |         dashboard = await alc.get("/api/portal/dashboard")
+   |
+
+E501 Line too long (132 > 100)
+  --> apps\api\scripts\demo_smoke.py:86:101
+   |
+84 |         dashboard.raise_for_status()
+85 |         assert dashboard.json()["learners"] >= 24
+86 |         print(f"Live demo verified: {activity['activity_number']} with private PDF, correction, resubmission, and verified metrics")
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Found 11 errors.
+[*] 2 fixable with the `--fix` option.

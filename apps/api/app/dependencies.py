@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import jwt
 from fastapi import Cookie, Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
@@ -7,7 +9,7 @@ from sqlalchemy.orm import selectinload
 from app.auth import decode_access_token
 from app.database import get_db
 from app.enums import AlcStatus, Role
-from app.models import ALC, DCU, SBU, User
+from app.models import ALC, DCU, SBU, AuthSession, User
 from app.observability import set_actor
 from app.services.scope import SUPERVISOR_ROLES, has_scope_key
 
@@ -56,15 +58,23 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required"
         )
     try:
-        user_id = decode_access_token(access_token)
+        identity = decode_access_token(access_token)
     except (jwt.InvalidTokenError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired"
         ) from None
-    user = await db.scalar(select(User).options(*AUTH_USER_LOADERS).where(User.id == user_id))
+    user = await db.scalar(
+        select(User).join(AuthSession, AuthSession.user_id == User.id)
+        .options(*AUTH_USER_LOADERS)
+        .where(User.id == identity.user_id, AuthSession.id == identity.session_id,
+               AuthSession.revoked_at.is_(None),
+               AuthSession.expires_at > datetime.now(timezone.utc))
+        .execution_options(populate_existing=True)
+    )
     if not user or not account_available(user):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account unavailable")
     set_actor(request, user.id, user.role)  # request log: user id and role only
+    request.state.auth_session_id = identity.session_id
     return user
 
 

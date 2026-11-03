@@ -1,5 +1,6 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
+import jwt
 import structlog
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from sqlalchemy import and_, func, or_, select
@@ -7,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import (
     create_access_token,
+    decode_access_token,
     hash_password_async,
     login_password_hash,
     new_csrf_token,
@@ -24,12 +26,18 @@ from app.dependencies import (
     require_csrf,
 )
 from app.enums import Role
-from app.models import ALC, RefreshToken, User
+from app.models import ALC, AuthSession, RefreshToken, User
 from app.observability import set_actor
 from app.schemas import ChangePasswordIn, LoginIn, UserOut
 from app.services.audit import record_audit
 from app.services.login_limiter import begin_login_attempt
-from app.services.sessions import claim_refresh_token, revoke_user_sessions
+from app.services.sessions import (
+    claim_refresh_token,
+    lock_user,
+    new_session,
+    revoke_session,
+    revoke_user_sessions,
+)
 
 log = structlog.get_logger("app.auth")
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -57,20 +65,23 @@ def set_auth_cookies(response: Response, access: str, refresh: str, csrf: str) -
 async def _establish_session(
     user: User, request: Request, response: Response, db: AsyncSession, action: str = "login"
 ) -> User:
-    """Issue a fresh session for an already-authenticated user: rotate a refresh token,
-    stamp last-login, audit, and set the auth cookies. Shared by portal and admin login."""
-    raw_refresh, refresh_hash = new_refresh_token()
-    db.add(
-        RefreshToken(
-            user_id=user.id,
-            token_hash=refresh_hash,
-            expires_at=datetime.now(timezone.utc) + timedelta(days=settings.refresh_token_days),
-        )
-    )
+    """Serialize issuance against reset; never issue from a stale verified password."""
+    verified_hash, verified_role = user.password_hash, user.role
+    locked = await lock_user(db, user.id)
+    if (locked is None or locked.password_hash != verified_hash or locked.role != verified_role
+            or not locked.is_active):
+        raise HTTPException(401, "Account changed; please sign in again")
+    # Reload hierarchy too, since a concurrent account/hierarchy edit may have completed.
+    user = await db.scalar(select(User).options(*AUTH_USER_LOADERS).where(User.id == locked.id)
+                           .execution_options(populate_existing=True))
+    if not account_available(user):
+        raise HTTPException(401, "Account unavailable")
+    family, raw_refresh = await new_session(db, user.id)
     user.last_login_at = datetime.now(timezone.utc)
     await record_audit(db, action, "user", user.id, user, request)
     await db.commit()
-    set_auth_cookies(response, create_access_token(user.id), raw_refresh, new_csrf_token())
+    set_auth_cookies(response, create_access_token(user.id, family.id),
+                     raw_refresh, new_csrf_token())
     # Operational log: who signed in (internal id and role). Never the identifier typed,
     # the password, or any token.
     set_actor(request, user.id, user.role)
@@ -172,29 +183,33 @@ async def rotate_refresh(
     if not refresh_token:
         raise HTTPException(status_code=401, detail="Refresh token required")
     now = datetime.now(timezone.utc)
-    # Check-and-revoke in one statement: of several requests presenting the same token, only
-    # one can rotate it; the others get the same 401 as an expired or revoked token.
-    user_id = await claim_refresh_token(db, token_digest(refresh_token), now)
-    if user_id is None:
+    claimed = await claim_refresh_token(db, token_digest(refresh_token), now)
+    if claimed is None:
+        # Replay detection may have revoked the family, including a racing successor.
+        await db.commit()
         raise HTTPException(status_code=401, detail="Session expired")
+    locked_user, family = claimed
     user = await db.scalar(
         select(User)
         .options(*AUTH_USER_LOADERS)
-        .where(User.id == user_id, User.is_active.is_(True))
+        .where(User.id == locked_user.id, User.is_active.is_(True))
+        .execution_options(populate_existing=True)
     )
     if not user or not account_available(user):
-        await db.rollback()  # as before: an unavailable account's token is left untouched
+        await revoke_session(db, family.id, now)
+        await db.commit()
         raise HTTPException(status_code=401, detail="Session expired")
     raw, digest = new_refresh_token()
     db.add(
         RefreshToken(
             user_id=user.id,
+            session_id=family.id,
             token_hash=digest,
-            expires_at=now + timedelta(days=settings.refresh_token_days),
+            expires_at=family.expires_at,
         )
     )
     await db.commit()
-    set_auth_cookies(response, create_access_token(user.id), raw, new_csrf_token())
+    set_auth_cookies(response, create_access_token(user.id, family.id), raw, new_csrf_token())
     return user
 
 
@@ -206,16 +221,28 @@ async def me(user: User = Depends(get_current_user)):
 @router.post("/logout", dependencies=[Depends(require_csrf)])
 async def logout(
     response: Response,
+    access_token: str | None = Cookie(default=None),
     refresh_token: str | None = Cookie(default=None),
     db: AsyncSession = Depends(get_db),
 ):
-    if refresh_token:
-        stored = await db.scalar(
-            select(RefreshToken).where(RefreshToken.token_hash == token_digest(refresh_token))
-        )
-        if stored:
-            stored.revoked_at = datetime.now(timezone.utc)
-            await db.commit()
+    target = None
+    if access_token:
+        try:
+            identity = decode_access_token(access_token)
+            target = (identity.user_id, identity.session_id)
+        except (jwt.InvalidTokenError, ValueError):
+            pass  # idempotent logout; expired access can still use the refresh family
+    if target is None and refresh_token:
+        stored = (await db.execute(select(RefreshToken.user_id, RefreshToken.session_id).where(
+            RefreshToken.token_hash == token_digest(refresh_token)))).one_or_none()
+        if stored and stored.session_id:
+            target = (stored.user_id, stored.session_id)
+    if target and await lock_user(db, target[0]):
+        family_id = await db.scalar(select(AuthSession.id).where(
+            AuthSession.id == target[1], AuthSession.user_id == target[0]).with_for_update())
+        if family_id:
+            await revoke_session(db, family_id, datetime.now(timezone.utc))
+        await db.commit()
     response.delete_cookie("access_token", path="/")
     response.delete_cookie("refresh_token", path="/")
     response.delete_cookie("csrf_token", path="/")
@@ -225,9 +252,10 @@ async def logout(
 @router.post("/change-password", dependencies=[Depends(require_csrf)])
 async def change_password(
     payload: ChangePasswordIn,
+    request: Request,
+    response: Response,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    refresh_token: str | None = Cookie(default=None),
 ):
     if not await verify_password_async(payload.current_password, user.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
@@ -235,12 +263,21 @@ async def change_password(
         raise HTTPException(
             status_code=400, detail="New password must be different from the current password"
         )
-    user.password_hash = await hash_password_async(payload.new_password)
+    verified_hash = user.password_hash
+    new_hash = await hash_password_async(payload.new_password)
+    user = await lock_user(db, user.id)
+    family = await db.scalar(select(AuthSession).where(
+        AuthSession.id == request.state.auth_session_id,
+        AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None),
+        AuthSession.expires_at > datetime.now(timezone.utc),
+    ).with_for_update().execution_options(populate_existing=True)) if user else None
+    if user is None or user.password_hash != verified_hash or family is None:
+        raise HTTPException(401, "Session changed; please sign in again")
+    user.password_hash = new_hash
     user.must_change_password = False
-    # Sign out every other browser; keep the session making this request.
-    await revoke_user_sessions(
-        db, user.id, keep_token_hash=token_digest(refresh_token) if refresh_token else None
-    )
+    await revoke_user_sessions(db, user.id)
+    replacement, raw = await new_session(db, user.id)
     await record_audit(db, "password_changed", "user", user.id, user)
     await db.commit()
+    set_auth_cookies(response, create_access_token(user.id, replacement.id), raw, new_csrf_token())
     return {"message": "Password changed"}

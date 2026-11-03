@@ -234,7 +234,7 @@ async def test_dcu_without_dcu_or_with_inactive_dcu_is_denied(client, session, h
 
     # Even with a forged/stale session token, every surface refuses it.
     logout(client)
-    client.cookies.set("access_token", create_access_token(hier["dcu_null"].id))
+    client.cookies.set("access_token", create_access_token(hier["dcu_null"].id, uuid.uuid4()))
     for path in ("/api/portal/dashboard", "/api/portal/alcs", "/api/portal/activities",
                  "/api/portal/sbus", "/api/portal/reports/activities.csv"):
         assert (await client.get(path)).status_code in (401, 403), path

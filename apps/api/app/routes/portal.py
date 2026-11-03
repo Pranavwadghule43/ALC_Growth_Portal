@@ -1142,6 +1142,7 @@ async def supervisor_reset_alc_password(
     alc = await scoped_alc(db, user, alc_id)
     target = await db.scalar(
         select(User).where(User.alc_id == alc.id, User.role == Role.ALC).order_by(User.username)
+        .with_for_update().execution_options(populate_existing=True)
     )
     if not target:
         raise HTTPException(status_code=404, detail="ALC user not found")

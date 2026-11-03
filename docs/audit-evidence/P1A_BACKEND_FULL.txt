@@ -1,0 +1,72 @@
+......................s....................................sss.......... [  7%]
+.........................................ssssss...s...............ssssss [ 14%]
+sssssssssssssssssssssssssssssssssss..................................... [ 22%]
+.......ss.........................................s..................... [ 29%]
+........................................................................ [ 37%]
+........................................................................ [ 44%]
+...................................................sss.........ssss..... [ 52%]
+........................................................................ [ 59%]
+...........s..................................................s......... [ 66%]
+........................................................................ [ 74%]
+........................................................................ [ 81%]
+........................................................................ [ 89%]
+........................................................................ [ 96%]
+.......................sss.......                                        [100%]
+============================== warnings summary ===============================
+tests/test_session_revocation_evidence.py::test_signature_algorithm_type_and_time_checks_remain_enforced[algorithm]
+  C:\Users\prana\Downloads\ALC Growth Portal\apps\api\.venv\Lib\site-packages\jwt\api_jwt.py:149: InsecureKeyLengthWarning: The HMAC key is 42 bytes long, which is below the minimum recommended length of 64 bytes for SHA512. See RFC 7518 Section 3.2.
+    return self._jws.encode(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_account_provisioning.py:567: POSIX mode bits (chmod 0600) are POSIX-only
+SKIPPED [1] tests\test_activity_indexes.py:247: set ALC_TEST_POSTGRES_URL to a throwaway PostgreSQL database named *test*
+SKIPPED [1] tests\test_activity_indexes.py:256: set ALC_TEST_POSTGRES_URL to a throwaway PostgreSQL database named *test*
+SKIPPED [1] tests\test_activity_indexes.py:371: set ALC_TEST_POSTGRES_URL to a throwaway PostgreSQL database named *test*
+SKIPPED [1] tests\test_auth_session_concurrency.py:90: explicit disposable loopback PostgreSQL required
+SKIPPED [1] tests\test_auth_session_concurrency.py:104: explicit disposable loopback PostgreSQL required
+SKIPPED [1] tests\test_auth_session_concurrency.py:115: explicit disposable loopback PostgreSQL required
+SKIPPED [1] tests\test_auth_session_concurrency.py:128: explicit disposable loopback PostgreSQL required
+SKIPPED [1] tests\test_auth_session_concurrency.py:142: explicit disposable loopback PostgreSQL required
+SKIPPED [1] tests\test_auth_session_concurrency.py:163: explicit disposable loopback PostgreSQL required
+SKIPPED [1] tests\test_auth_session_migration.py:106: explicit isolated loopback PostgreSQL test required
+SKIPPED [6] tests\test_backup_scripts.py:112: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:124: shellcheck is not installed
+SKIPPED [6] tests\test_backup_scripts.py:134: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:141: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:150: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:169: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:178: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:185: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:199: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:223: POSIX bash is required
+SKIPPED [4] tests\test_backup_scripts.py:230: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:237: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:242: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:253: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:260: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:271: POSIX bash is required
+SKIPPED [3] tests\test_backup_scripts.py:277: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:285: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:299: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:304: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:311: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:319: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:332: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:338: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:344: POSIX bash is required
+SKIPPED [1] tests\test_backup_scripts.py:356: POSIX bash is required
+SKIPPED [1] tests\test_backup_tool.py:86: symlinks need privileges on Windows
+SKIPPED [1] tests\test_backup_tool.py:97: symlinks need privileges on Windows
+SKIPPED [1] tests\test_backup_tool.py:538: symlinks need privileges on Windows
+SKIPPED [3] tests\test_growth_challenge_config.py:360: time.tzset is POSIX-only
+SKIPPED [1] tests\test_growth_challenge_migration.py:290: set ALC_TEST_POSTGRES_URL to a throwaway PostgreSQL database named *test*
+SKIPPED [1] tests\test_growth_challenge_migration.py:306: set ALC_TEST_POSTGRES_URL to a throwaway PostgreSQL database named *test*
+SKIPPED [1] tests\test_growth_challenge_migration.py:328: set ALC_TEST_POSTGRES_URL to a throwaway PostgreSQL database named *test*
+SKIPPED [1] tests\test_growth_challenge_migration.py:339: set ALC_TEST_POSTGRES_URL to a throwaway PostgreSQL database named *test*
+SKIPPED [1] tests\test_list_count_performance.py:282: set ALC_TEST_POSTGRES_URL to a throwaway PostgreSQL database named *test*
+SKIPPED [1] tests\test_login_rate_limit.py:444: set LOGIN_RATE_LIMIT_TEST_REDIS_URL
+SKIPPED [1] tests\test_yearly_activity_migration.py:118: set ALC_TEST_POSTGRES_URL to a throwaway PostgreSQL database named *test*
+SKIPPED [1] tests\test_yearly_concurrency_postgres.py:92: requires explicit isolated loopback test database
+SKIPPED [1] tests\test_yearly_concurrency_postgres.py:125: requires explicit isolated loopback test database
+902 passed, 67 skipped, 1 warning in 612.32s (0:10:12)

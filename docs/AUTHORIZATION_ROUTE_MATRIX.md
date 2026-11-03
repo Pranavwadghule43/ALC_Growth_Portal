@@ -100,10 +100,10 @@ All authenticated dependencies call `get_current_user`, which reloads the curren
 
 - `POST /auth/login`: public credential exchange, operational roles only, account role resolved in the database. JSON body plus SameSite cookies; no separate login CSRF token. IP and IP+identifier throttles apply before Argon2.
 - `POST /auth/admin-login`: same credential exchange restricted to ADMIN identities.
-- `POST /auth/refresh`: opaque refresh cookie, atomically consumed `UPDATE ... RETURNING`, expiry/revocation/account checks; no separate CSRF token. Rotates all auth cookies. SameSite=Lax is the browser cross-site defense.
-- `POST /auth/logout`: double-submit CSRF; revokes the submitted refresh token and clears cookies. Does not revoke copied access JWTs.
+- `POST /auth/refresh`: opaque refresh cookie bound to a persistent family, user/family/token locks and conditional consumption; expiry/revocation/account checks. Replay revokes that family and successors. No separate CSRF token; SameSite=Lax remains the browser cross-site defense.
+- `POST /auth/logout`: double-submit CSRF; revokes the signed access family or stored refresh-family fallback and clears cookies. Copied access JWTs from that family fail immediately after commit; independent sessions remain valid.
 - `GET /auth/me`: valid access cookie plus current active account/hierarchy; permits must-change-password accounts to reach their profile.
-- `POST /auth/change-password`: current password proof plus CSRF. Revokes other refresh tokens; access JWT residual lifetime is described in SECURITY_AUDIT_EVIDENCE.md.
+- `POST /auth/change-password`: current password proof plus CSRF and locked current-session validation. Revokes all previous access/refresh families; returns replacement auth cookies for the current browser. See SESSION_REVOCATION_REMEDIATION.md.
 
 ## Resource checks and evidence
 

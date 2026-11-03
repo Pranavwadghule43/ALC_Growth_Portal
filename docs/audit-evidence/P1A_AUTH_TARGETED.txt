@@ -1,0 +1,8 @@
+...................................................                      [100%]
+============================== warnings summary ===============================
+tests/test_session_revocation_evidence.py::test_signature_algorithm_type_and_time_checks_remain_enforced[algorithm]
+  C:\Users\prana\Downloads\ALC Growth Portal\apps\api\.venv\Lib\site-packages\jwt\api_jwt.py:149: InsecureKeyLengthWarning: The HMAC key is 42 bytes long, which is below the minimum recommended length of 64 bytes for SHA512. See RFC 7518 Section 3.2.
+    return self._jws.encode(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+51 passed, 1 warning in 78.38s (0:01:18)

@@ -117,11 +117,31 @@ class User(Base, TimestampMixin):
     dcu: Mapped[DCU | None] = relationship(back_populates="users")
 
 
+class AuthSession(Base):
+    """Persistent device/refresh family; access JWTs reference this opaque primary key."""
+
+    __tablename__ = "auth_sessions"
+    __table_args__ = (
+        CheckConstraint("expires_at > created_at", name="expiry_after_creation"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class RefreshToken(Base):
     __tablename__ = "refresh_tokens"
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    # NULL only for pre-migration rows, which can no longer authenticate/rotate.
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("auth_sessions.id", ondelete="CASCADE"), nullable=True, index=True
     )
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)

@@ -31,7 +31,8 @@ from app.auth import (
 from app.database import Base, get_db
 from app.enums import Role
 from app.main import app
-from app.models import DCU, RCU, RefreshToken, User
+from app.models import DCU, RCU, AuthSession, RefreshToken, User
+from app.services.sessions import new_session
 from tests.conftest import login
 
 ALC_A = ("00010001", "StrongAlcPassA!", "ALC")
@@ -78,8 +79,8 @@ async def test_old_refresh_token_is_rejected_after_rotation(client, seeded):
     for _ in range(2):  # every later use of the old token fails the same safe way
         resp = await refresh_with(client, old)
         assert resp.status_code == 401 and resp.json()["detail"] == "Session expired"
-    # Rejecting the old token does not disturb the successor session.
-    assert (await refresh_with(client, successor)).status_code == 200
+    # Reuse is compromise evidence: revoke the family, including its successor.
+    assert (await refresh_with(client, successor)).status_code == 401
 
 
 @pytest.mark.asyncio
@@ -130,14 +131,8 @@ async def test_concurrent_rotation_of_one_token_has_exactly_one_winner(isolated_
         user = User(username="race-admin", password_hash="x", role=Role.ADMIN)
         db.add(user)
         await db.flush()
-        raw, digest = new_refresh_token()
-        db.add(
-            RefreshToken(
-                user_id=user.id,
-                token_hash=digest,
-                expires_at=datetime.now(timezone.utc) + timedelta(days=1),
-            )
-        )
+        family, raw = await new_session(db, user.id)
+        family_id = family.id
         await db.commit()
         user_id = user.id
 
@@ -155,9 +150,9 @@ async def test_concurrent_rotation_of_one_token_has_exactly_one_winner(isolated_
     async with isolated_app() as db:
         tokens = list(await db.scalars(select(RefreshToken).where(RefreshToken.user_id == user_id)))
     active = [t for t in tokens if t.revoked_at is None]
-    assert len(tokens) == 2 and len(active) == 1  # the original (revoked) + one successor
-    winner = next(cookie for status, cookie in results if status == 200)
-    assert active[0].token_hash == auth.token_digest(winner)
+    assert len(tokens) == 2 and len(active) == 0  # replay contains the winning successor too
+    async with isolated_app() as db:
+        assert (await db.get(AuthSession, family_id)).revoked_at is not None
 
 
 # --------------------------------------------------------------------------- #
@@ -191,8 +186,11 @@ async def test_self_password_change_keeps_current_session_only(client, seeded):
         json={"current_password": ALC_A[1], "new_password": "BrandNewAlcPass9!"},
     )
     assert resp.status_code == 200
+    replacement = client.cookies.get("refresh_token")
+    assert replacement != current
     assert (await refresh_with(client, other_browser)).status_code == 401
-    assert (await refresh_with(client, current)).status_code == 200
+    assert (await refresh_with(client, current)).status_code == 401
+    assert (await refresh_with(client, replacement)).status_code == 200
 
 
 # --------------------------------------------------------------------------- #

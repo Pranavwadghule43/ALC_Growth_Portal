@@ -106,7 +106,7 @@ def test_revision_chain_remains_linear_after_0006():
     config = Config()
     config.set_main_option("script_location", str(API_DIR / "alembic"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["20261103_0008"]
+    assert script.get_heads() == ["20261103_0009"]
     assert script.get_revision(REVISION).down_revision == PREVIOUS
     assert (MIGRATION.revision, MIGRATION.down_revision) == (REVISION, PREVIOUS)
 
