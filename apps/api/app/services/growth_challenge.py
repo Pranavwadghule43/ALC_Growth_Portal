@@ -256,6 +256,17 @@ async def all_challenges(db: AsyncSession) -> list[GrowthChallenge]:
     )
 
 
+async def published_challenges(db: AsyncSession) -> list[GrowthChallenge]:
+    """Published global challenges visible to operational portal users."""
+    return list(
+        await db.scalars(
+            select(GrowthChallenge)
+            .where(GrowthChallenge.is_published.is_(True))
+            .order_by(GrowthChallenge.start_date.desc(), GrowthChallenge.created_at.desc())
+        )
+    )
+
+
 def validate_period(start: date, end: date) -> str | None:
     """Why ``start .. end`` is not an acceptable challenge period, or None when it is."""
     if end < start:
@@ -281,6 +292,8 @@ def challenge_out(challenge: GrowthChallenge, today: date) -> dict:
     return {
         "id": challenge.id,
         "name": challenge.name,
+        "description": challenge.description,
+        "is_published": challenge.is_published,
         "start_date": challenge.start_date,
         "end_date": challenge.end_date,
         "targets": targets_of(challenge),

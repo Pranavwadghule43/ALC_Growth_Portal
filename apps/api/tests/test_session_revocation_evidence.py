@@ -220,7 +220,7 @@ async def test_auth_session_join_adds_no_database_round_trips(client, session, s
                              .options(*AUTH_USER_LOADERS).execution_options(populate_existing=True))
     with StatementLog(session) as after:
         assert (await client.get("/api/auth/me")).status_code == 200
-    assert len(before.statements) == len(after.statements)
+    assert len(before.statements) == len(after.statements) == 1
     assert len(after.touching("auth_sessions")) == 1
 
 

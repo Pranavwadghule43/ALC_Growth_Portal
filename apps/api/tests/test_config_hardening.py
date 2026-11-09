@@ -98,6 +98,28 @@ def test_fully_configured_production_is_valid():
     assert validate_settings(build(), environ={}).app_env == "production"
 
 
+def test_database_pool_defaults_are_bounded_and_preserve_single_worker_budget():
+    dev = Settings(_env_file=None)
+    assert dev.db_pool_size == 10
+    assert dev.db_max_overflow == 20
+    assert dev.db_pool_timeout_seconds == 5.0
+    assert dev.db_pool_recycle_seconds == 1800
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("db_pool_size", 0),
+        ("db_max_overflow", -1),
+        ("db_pool_timeout_seconds", 0.1),
+        ("db_pool_recycle_seconds", 30),
+    ],
+)
+def test_database_pool_settings_reject_unsafe_bounds(field, value):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **{field: value})
+
+
 def test_production_accepts_https_cors_origin_and_aws_s3():
     assert problems(cors_origins="https://portal.example.org", s3_endpoint_url="") == []
 

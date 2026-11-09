@@ -1,5 +1,50 @@
 # Validation evidence — 2026-11-03
 
+> **Current status — 2026-11-04: NOT READY for production.** Evidence-based Yearly Activities
+> replaces manual marking. Auth checkpoint `53731d5` is committed locally. Final gates: 930 backend
+> passed / 68 skipped; 139 frontend passed; 17 PostgreSQL and 1 real Redis test passed. Runtime npm/pip
+> audits are clear; 12 dev npm entries remain. Full Ruff is now clean and a disposable service-backed
+> CI workflow has been added but not yet run remotely. Actual 25/50/100/200-VU
+> stages missed targets; 400/800 were not run. Bounded uploads and real PG/private-S3 restore passed.
+> Source DB remains 0009; production infrastructure/browser UAT remain unverified. See the
+> [complete current report](../MASTER_IMPLEMENTATION_PRODUCTION_REPORT_20261104.md),
+> [workflow](../YEARLY_ACTIVITY_EVIDENCE_WORKFLOW.md) and
+> [redacted measured results](MASTER_RUNTIME_RESULTS.json).
+>
+> The historical sections below retain earlier evidence. Current results above supersede the old
+> manual YES/NO workflow, uncommitted-auth status and earlier dependency/load/recovery findings.
+
+## Current completed validation — 2026-11-04
+
+| Gate | Actual final result |
+| --- | --- |
+| Complete backend `pytest -q -rs` | **930 passed, 68 skipped, 0 failed**, 1 warning, 1046.83 s |
+| Final auth/yearly PostgreSQL migration/race group | **17 passed**, 32.44 s; new private schemas only |
+| Real Redis atomic limiter test | **1 passed**, 31 deselected, 1.11 s |
+| Frontend Vitest | **139 passed / 11 files**, 0 failed, 103.35 s |
+| ESLint | Passed |
+| TypeScript + Vite (`VITE_API_URL=/api`) | Passed; build 18.76 s |
+| Application/tests/new migration/auth cleanup Ruff | Passed |
+| Load/recovery Python tooling Ruff | Passed |
+| Required full `ruff check app tests scripts` | **11 pre-existing findings**, no new findings |
+| `git diff --check` | Passed; line-ending normalization notices only |
+
+## Continuation validation — 2026-11-04
+
+| Gate | Actual result / limitation |
+| --- | --- |
+| List-count contract update | Updated seven stale expected values to four statements; runtime test remains NOT VERIFIED in this foreground-limited executor |
+| Exact leaderboard scoring | **8 passed**, 34 deselected; duplicate/all-equal/strictly-lower/Fraction contracts exercised |
+| Frontend Vitest | **139 passed / 11 files** in three bounded runs |
+| ESLint | Passed |
+| TypeScript + Vite (`VITE_API_URL=/api`) | Passed; Vite emitted its existing native-config future warning |
+| Full `ruff check app tests scripts` | **Passed** after mechanical formatting of the 11 previously reported script findings |
+| Alembic graph | One head: `20261104_0010` follows `20261103_0009` |
+| CI definition | Added local GitHub Actions workflow with PostgreSQL 17/Redis 7 services; hosted CI execution is NOT VERIFIED |
+| Full backend/PostgreSQL/Redis/load rerun | NOT VERIFIED after the performance candidate: local foreground test execution is terminated at ~30 seconds; no pass claim is made |
+
+## Historical evidence — 2026-11-03
+
 All application tests use synthetic fixtures. No test ran against the configured development/production database. Counts below overlap; do not add them together as independent test coverage.
 
 ## Current P1-A session revocation remediation

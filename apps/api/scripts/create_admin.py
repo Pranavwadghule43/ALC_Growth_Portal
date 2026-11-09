@@ -4,7 +4,6 @@ import getpass
 import os
 
 from dotenv import load_dotenv
-
 from sqlalchemy import select
 
 from app.auth import hash_password

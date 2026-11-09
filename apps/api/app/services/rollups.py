@@ -10,6 +10,7 @@ private to its ALC and is never part of an operational metric. Metrics always re
 activity's *current* status, so a changed decision moves the activity between aggregates
 immediately while its review history stays untouched.
 """
+
 import uuid
 from collections.abc import Iterable
 
@@ -71,11 +72,7 @@ def activity_metric_columns() -> list:
 async def activity_totals(db: AsyncSession, *filters: ColumnElement[bool]) -> dict:
     """One row of activity metrics over submitted-workflow activities matching ``filters``."""
     row = (
-        (
-            await db.execute(
-                select(*activity_metric_columns()).where(submitted_workflow(), *filters)
-            )
-        )
+        (await db.execute(select(*activity_metric_columns()).where(submitted_workflow(), *filters)))
         .mappings()
         .one()
     )
@@ -89,58 +86,78 @@ async def sbu_rollup(
 ) -> dict[uuid.UUID, dict]:
     """Per-SBU ALC, partner and activity metrics for the ALCs matching ``alc_filter``.
 
-    Three grouped queries in total (ALCs, activities, partners) regardless of SBU count.
-    ``activity_filters`` further restricts the activity rows (e.g. a report date range)."""
+    The three independent aggregates stay separate SQL subqueries to prevent fan-out, but
+    return in one database round trip regardless of SBU count. ``activity_filters`` further
+    restricts activity rows (e.g. a report date range)."""
     result: dict[uuid.UUID, dict] = {}
 
     def slot(sbu_id):
         return result.setdefault(
             sbu_id,
-            {"alcs": 0, "active_alcs": 0, "inactive_alcs": 0, "partners": 0,
-             **ZERO_ACTIVITY_METRICS},
+            {
+                "alcs": 0,
+                "active_alcs": 0,
+                "inactive_alcs": 0,
+                "partners": 0,
+                **ZERO_ACTIVITY_METRICS,
+            },
         )
 
-    alc_rows = (
-        await db.execute(
-            select(
-                ALC.sbu_id,
-                func.count(ALC.id),
-                func.count(case((ALC.status == AlcStatus.ACTIVE, 1))),
-            )
-            .where(alc_filter)
-            .group_by(ALC.sbu_id)
+    alc_totals = (
+        select(
+            ALC.sbu_id.label("sbu_id"),
+            func.count(ALC.id).label("alcs"),
+            func.count(case((ALC.status == AlcStatus.ACTIVE, 1))).label("active_alcs"),
         )
-    ).all()
-    for sbu_id, total, active in alc_rows:
-        entry = slot(sbu_id)
-        entry.update(alcs=total, active_alcs=active, inactive_alcs=total - active)
-
-    activity_rows = (
+        .where(alc_filter)
+        .group_by(ALC.sbu_id)
+        .cte("sbu_alc_totals")
+    )
+    activity_totals = (
+        select(ALC.sbu_id.label("sbu_id"), *activity_metric_columns())
+        .join(ALC, Activity.alc_id == ALC.id)
+        .where(alc_filter, submitted_workflow(), *activity_filters)
+        .group_by(ALC.sbu_id)
+        .cte("sbu_activity_totals")
+    )
+    partner_totals = (
+        select(ALC.sbu_id.label("sbu_id"), func.count(Partner.id).label("partners"))
+        .join(ALC, Partner.alc_id == ALC.id)
+        .where(alc_filter)
+        .group_by(ALC.sbu_id)
+        .cte("sbu_partner_totals")
+    )
+    rows = (
         (
             await db.execute(
-                select(ALC.sbu_id.label("sbu_id"), *activity_metric_columns())
-                .join(ALC, Activity.alc_id == ALC.id)
-                .where(alc_filter, submitted_workflow(), *activity_filters)
-                .group_by(ALC.sbu_id)
+                select(
+                    alc_totals.c.sbu_id,
+                    alc_totals.c.alcs,
+                    alc_totals.c.active_alcs,
+                    *(activity_totals.c[key] for key in ZERO_ACTIVITY_METRICS),
+                    partner_totals.c.partners,
+                ).select_from(
+                    alc_totals.outerjoin(
+                        activity_totals, activity_totals.c.sbu_id == alc_totals.c.sbu_id
+                    ).outerjoin(partner_totals, partner_totals.c.sbu_id == alc_totals.c.sbu_id)
+                )
             )
         )
         .mappings()
         .all()
     )
-    for row in activity_rows:
-        data = dict(row)
-        slot(data.pop("sbu_id")).update(data)
-
-    partner_rows = (
-        await db.execute(
-            select(ALC.sbu_id, func.count(Partner.id))
-            .join(ALC, Partner.alc_id == ALC.id)
-            .where(alc_filter)
-            .group_by(ALC.sbu_id)
+    for row in rows:
+        sbu_id = row["sbu_id"]
+        total = int(row["alcs"] or 0)
+        active = int(row["active_alcs"] or 0)
+        data = {key: int(row[key] or 0) for key in ZERO_ACTIVITY_METRICS}
+        slot(sbu_id).update(
+            alcs=total,
+            active_alcs=active,
+            inactive_alcs=total - active,
+            partners=int(row["partners"] or 0),
+            **data,
         )
-    ).all()
-    for sbu_id, partners in partner_rows:
-        slot(sbu_id)["partners"] = partners
     return result
 
 

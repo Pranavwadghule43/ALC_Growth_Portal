@@ -305,7 +305,8 @@ async def test_create_and_update_are_audit_logged(client, session, seeded, today
     assert (entry.entity_type, entry.entity_id) == ("growth_challenge", created["id"])
     assert (entry.actor_user_id, entry.actor_role) == (seeded["admin"].id, "ADMIN")
     assert entry.audit_metadata == {
-        "name": "Audited", "start_date": str(today), "end_date": str(today + timedelta(days=29)),
+        "name": "Audited", "description": "", "is_published": True,
+        "start_date": str(today), "end_date": str(today + timedelta(days=29)),
         "targets": {"prospects": 40, "meetings": 20, "pilots": 10, "partnerships": 5},
     }
 

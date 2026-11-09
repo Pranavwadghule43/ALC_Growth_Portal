@@ -25,7 +25,7 @@ from sqlalchemy.orm import selectinload
 
 from app.auth import hash_password_async
 from app.config import settings
-from app.database import get_db
+from app.database import get_db, release_read_only_transaction
 from app.dependencies import (
     pagination,
     require_alc,
@@ -47,6 +47,7 @@ from app.models import (
     Task,
     User,
 )
+from app.response_cache import get_or_create
 from app.schemas import (
     ActivityIn,
     ActivityOut,
@@ -58,7 +59,7 @@ from app.schemas import (
     TaskIn,
     TaskOut,
 )
-from app.services import growth_challenge
+from app.services import challenge_tracking, growth_challenge
 from app.services.activities import (
     EDITABLE_STATUSES,
     FINAL_STATUSES,
@@ -204,7 +205,7 @@ async def challenge_data(user: User, db: AsyncSession) -> dict:
         )
     ).all()
     resolution = growth_challenge.resolve(
-        overrides, await growth_challenge.all_challenges(db), today
+        overrides, await growth_challenge.published_challenges(db), today
     )
     source = "verified activities; partnerships require a linked partner"
     period = resolution.period
@@ -409,9 +410,26 @@ async def supervisor_dashboard(user: User, db: AsyncSession) -> dict:
 
 @router.get("/dashboard")
 async def dashboard(user: User = Depends(require_portal_user), db: AsyncSession = Depends(get_db)):
-    if user.role in (Role.DCU, Role.SBU):
-        return await supervisor_dashboard(user, db)
-    return await alc_dashboard(user, db)
+    await release_read_only_transaction(db)
+
+    async def build():
+        if user.role in (Role.DCU, Role.SBU):
+            payload = await supervisor_dashboard(user, db)
+        else:
+            payload = await alc_dashboard(user, db)
+        await release_read_only_transaction(db)
+        return payload
+
+    # User id is deliberate: notifications and ALC challenge overrides make even otherwise
+    # identical hierarchy scopes actor-sensitive.
+    return (
+        await get_or_create(
+            "dashboard",
+            (user.role.value, str(user.id)),
+            settings.response_cache_dashboard_ttl_seconds,
+            build,
+        )
+    ).value
 
 
 # --------------------------------------------------------------------------- #
@@ -813,6 +831,52 @@ async def challenge(user: User = Depends(require_alc), db: AsyncSession = Depend
     return await challenge_data(user, db)
 
 
+@router.get("/growth-challenges")
+async def visible_growth_challenges(
+    user: User = Depends(require_portal_user), db: AsyncSession = Depends(get_db)
+):
+    """Published Admin challenges visible to the authenticated operational user."""
+    payload = {"items": await challenge_tracking.visible_challenges(db, user)}
+    await release_read_only_transaction(db)
+    return payload
+
+
+@router.get("/growth-challenges/{challenge_id}/progress")
+async def growth_challenge_progress(
+    challenge_id: uuid.UUID,
+    paging: tuple[int, int] = Depends(pagination),
+    search: str | None = None,
+    sbu_id: uuid.UUID | None = None,
+    alc_id: uuid.UUID | None = None,
+    user: User = Depends(require_portal_user),
+    db: AsyncSession = Depends(get_db),
+):
+    payload = await challenge_tracking.progress(
+        db,
+        user,
+        challenge_id,
+        page=paging[0],
+        page_size=paging[1],
+        search=search,
+        sbu_id=sbu_id,
+        alc_id=alc_id,
+    )
+    await release_read_only_transaction(db)
+    return payload
+
+
+@router.get("/growth-challenges/{challenge_id}/alcs/{alc_id}/evidence")
+async def growth_challenge_evidence(
+    challenge_id: uuid.UUID,
+    alc_id: uuid.UUID,
+    user: User = Depends(require_portal_user),
+    db: AsyncSession = Depends(get_db),
+):
+    payload = await challenge_tracking.evidence_activities(db, user, challenge_id, alc_id)
+    await release_read_only_transaction(db)
+    return payload
+
+
 @router.get("/notifications")
 async def notifications(
     user: User = Depends(require_portal_user), db: AsyncSession = Depends(get_db)
@@ -1101,6 +1165,13 @@ async def supervisor_alc_detail(
             .order_by(Partner.partner_name)
         )
     ).all()
+    alc_users = (
+        await db.execute(
+            select(User.id, User.username, User.is_active)
+            .where(User.alc_id == alc.id, User.role == Role.ALC)
+            .order_by(User.username, User.id)
+        )
+    ).mappings().all()
     sbu = alc.sbu
     return {
         "alc": {
@@ -1126,6 +1197,9 @@ async def supervisor_alc_detail(
             }
             for partner, count, last in partner_rows
         ],
+        # Supervisors need an explicit immutable id when a centre has multiple logins.
+        # Password hashes, email addresses and session data are never exposed.
+        "alc_users": alc_users,
     }
 
 
@@ -1140,12 +1214,22 @@ async def supervisor_reset_alc_password(
     """Reset the login of an ALC inside the caller's scope. Supervisors can only reset ALC
     logins — never SBU, DCU or ADMIN accounts (user management stays admin-only)."""
     alc = await scoped_alc(db, user, alc_id)
-    target = await db.scalar(
-        select(User).where(User.alc_id == alc.id, User.role == Role.ALC).order_by(User.username)
-        .with_for_update().execution_options(populate_existing=True)
+    target_query = select(User).where(User.alc_id == alc.id, User.role == Role.ALC)
+    if payload.user_id is not None:
+        target_query = target_query.where(User.id == payload.user_id)
+    targets = list(
+        await db.scalars(
+            target_query.order_by(User.username, User.id)
+            .limit(2)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
     )
-    if not target:
+    if not targets:
         raise HTTPException(status_code=404, detail="ALC user not found")
+    if len(targets) != 1:
+        raise HTTPException(status_code=409, detail="Select the ALC user to reset")
+    target = targets[0]
     target.password_hash = await hash_password_async(payload.password)
     target.must_change_password = True
     await revoke_user_sessions(db, target.id)

@@ -52,7 +52,7 @@ export default function ActivityEditor(){
   const [message,setMessage]=useState<string>(()=>(location.state as {message?:string}|null)?.message??''); const [formError,setFormError]=useState(''); const [busy,setBusy]=useState(false)
   const activityQuery=useQuery({queryKey:['activity',id],queryFn:()=>api.get<Activity>(`/portal/activities/${id}`),enabled:!!id})
   const partnersQuery=useQuery({queryKey:['partners'],queryFn:()=>api.get<Partner[]>('/portal/partners')})
-  const {register,handleSubmit,reset,formState:{errors}}=useForm<FormValues>({resolver:zodResolver(schema),defaultValues:{learners_reached:0,leads_generated:0,admissions_generated:0,activity_date:localToday()}})
+  const {register,handleSubmit,reset,formState:{errors}}=useForm<z.input<typeof schema>, unknown, FormValues>({resolver:zodResolver(schema),defaultValues:{learners_reached:0,leads_generated:0,admissions_generated:0,activity_date:localToday()}})
   useEffect(()=>{if(activityQuery.data){const a=activityQuery.data;reset({activity_type:a.activity_type,partner_id:a.partner_id??'',ecosystem:a.ecosystem,collaboration_type:a.collaboration_type??'',activity_date:a.activity_date,location:a.location,learners_reached:a.learners_reached,leads_generated:a.leads_generated,admissions_generated:a.admissions_generated,description:a.description,outcome:a.outcome})}},[activityQuery.data,reset])
   const activity=activityQuery.data; const editable=!id||activity?.status==='DRAFT'||activity?.status==='CORRECTION_REQUIRED'
   const isCorrection=activity?.status==='CORRECTION_REQUIRED'

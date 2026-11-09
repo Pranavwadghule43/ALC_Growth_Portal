@@ -4,7 +4,7 @@ import jwt
 from fastapi import Cookie, Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload
 
 from app.auth import decode_access_token
 from app.database import get_db
@@ -13,27 +13,28 @@ from app.models import ALC, DCU, SBU, AuthSession, User
 from app.observability import set_actor
 from app.services.scope import SUPERVISOR_ROLES, has_scope_key
 
-# Eager-load every relationship the ``UserOut`` response schema serializes, including
+# Join-load every scalar relationship the ``UserOut`` response schema serializes, including
 # the nested ``User.alc -> ALC.sbu`` chain. Without loading ``ALC.sbu`` here, Pydantic
 # would trigger an async lazy load while building the response and fail with
 # ``MissingGreenlet``. Any endpoint that returns a ``User`` as ``UserOut`` must load
 # these (directly, or by re-querying through ``load_user_for_response`` after a commit).
 USER_RESPONSE_LOADERS = (
-    selectinload(User.alc).selectinload(ALC.sbu),
-    selectinload(User.sbu),
-    selectinload(User.dcu),
+    joinedload(User.alc).joinedload(ALC.sbu),
+    joinedload(User.sbu),
+    joinedload(User.dcu),
 )
 
 
-# Everything ``account_available`` inspects: the user's whole operational chain
+# Everything ``account_available`` inspects, still in the same SQL statement: the user's
+# whole operational chain.
 # (ALC -> SBU -> DCU -> RCU), on top of what the response schema needs. Loaded wherever a
 # session is created or used (login, refresh, every authenticated request), so availability
 # always reflects the current database state, never what was true when the JWT was issued.
 AUTH_USER_LOADERS = (
     *USER_RESPONSE_LOADERS,
-    selectinload(User.alc).selectinload(ALC.sbu).selectinload(SBU.dcu).selectinload(DCU.rcu),
-    selectinload(User.sbu).selectinload(SBU.dcu).selectinload(DCU.rcu),
-    selectinload(User.dcu).selectinload(DCU.rcu),
+    joinedload(User.alc).joinedload(ALC.sbu).joinedload(SBU.dcu).joinedload(DCU.rcu),
+    joinedload(User.sbu).joinedload(SBU.dcu).joinedload(DCU.rcu),
+    joinedload(User.dcu).joinedload(DCU.rcu),
 )
 
 

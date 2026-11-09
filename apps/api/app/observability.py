@@ -32,6 +32,7 @@ Safety net
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 import sys
 import time
@@ -191,6 +192,12 @@ class RequestContextMiddleware:
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(request_id=request_id)
         started = time.perf_counter()
+        diagnostic_token = None
+        diagnostic_metrics = None
+        if os.getenv("ALC_DB_PERF_DIAGNOSTICS") == "1":
+            from app.performance_diagnostics import start_request_metrics
+
+            diagnostic_token, diagnostic_metrics = start_request_metrics()
         status_code: int | None = None
 
         async def send_with_request_id(message: Message) -> None:
@@ -220,11 +227,15 @@ class RequestContextMiddleware:
             # client) still sees the failure. It is not logged a second time, see below.
             raise
         finally:
-            self._log_completion(scope, state, status_code, started)
+            if diagnostic_token is not None:
+                from app.performance_diagnostics import finish_request_metrics
+
+                finish_request_metrics(diagnostic_token)
+            self._log_completion(scope, state, status_code, started, diagnostic_metrics)
             structlog.contextvars.clear_contextvars()
 
     def _log_completion(self, scope: Scope, state: dict, status_code: int | None,
-                        started: float) -> None:
+                        started: float, diagnostic_metrics: dict | None = None) -> None:
         path = scope["path"]
         status = status_code if status_code is not None else 500
         fields = {
@@ -246,4 +257,14 @@ class RequestContextMiddleware:
             level = logging.DEBUG  # successful probes must not flood the log
         else:
             level = logging.INFO
+        if diagnostic_metrics is not None:
+            total_ms = (time.perf_counter() - started) * 1000
+            sql_ms = float(diagnostic_metrics["sql_statement_ms"])
+            fields.update(
+                db_statement_count=int(diagnostic_metrics["sql_statement_count"]),
+                db_statement_ms=round(sql_ms, 2),
+                db_checkout_count=int(diagnostic_metrics["pool_checkout_count"]),
+                db_checkout_ms=round(float(diagnostic_metrics["pool_checkout_ms"]), 2),
+                non_db_ms=round(max(0.0, total_ms - sql_ms), 2),
+            )
         self.log.log(level, "request_completed", **fields)

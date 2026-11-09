@@ -44,8 +44,21 @@ async def session():
     await engine.dispose()
 
 
+@pytest.fixture(scope="session")
+def seed_password_hashes():
+    """Reuse real Argon2 fixture hashes across independent synthetic databases.
+
+    Only fixed seed credentials are cached. Login verification and password-change/reset
+    hashing retain the real application parameters and run normally in every test.
+    """
+    return {password: hash_password(password) for password in (
+        "StrongAdminPass!", "StrongAlcPassA!", "StrongAlcPassB!", "StrongAlcPassC!",
+        "StrongSbuPass4!", "StrongSbuPass6!", "StrongDcuPassword!",
+    )}
+
+
 @pytest_asyncio.fixture
-async def seeded(session):
+async def seeded(session, seed_password_hashes):
     sbu4 = SBU(code="SBU 4", name="Strategic Business Unit 4")
     sbu6 = SBU(code="SBU 6", name="Strategic Business Unit 6")
     session.add_all([sbu4, sbu6])
@@ -59,34 +72,36 @@ async def seeded(session):
     alc_c = ALC(alc_code="00010003", alc_name="Centre C", sbu_id=sbu4.id)
     session.add_all([alc_a, alc_b, alc_c])
     await session.flush()
-    admin = User(username="admin", password_hash=hash_password("StrongAdminPass!"), role=Role.ADMIN)
+    admin = User(
+        username="admin", password_hash=seed_password_hashes["StrongAdminPass!"], role=Role.ADMIN
+    )
     user_a = User(
         username="alc-a",
-        password_hash=hash_password("StrongAlcPassA!"),
+        password_hash=seed_password_hashes["StrongAlcPassA!"],
         role=Role.ALC,
         alc_id=alc_a.id,
     )
     user_b = User(
         username="alc-b",
-        password_hash=hash_password("StrongAlcPassB!"),
+        password_hash=seed_password_hashes["StrongAlcPassB!"],
         role=Role.ALC,
         alc_id=alc_b.id,
     )
     user_c = User(
         username="alc-c",
-        password_hash=hash_password("StrongAlcPassC!"),
+        password_hash=seed_password_hashes["StrongAlcPassC!"],
         role=Role.ALC,
         alc_id=alc_c.id,
     )
     sbu_user_4 = User(
         username="sbu-4",
-        password_hash=hash_password("StrongSbuPass4!"),
+        password_hash=seed_password_hashes["StrongSbuPass4!"],
         role=Role.SBU,
         sbu_id=sbu4.id,
     )
     sbu_user_6 = User(
         username="sbu-6",
-        password_hash=hash_password("StrongSbuPass6!"),
+        password_hash=seed_password_hashes["StrongSbuPass6!"],
         role=Role.SBU,
         sbu_id=sbu6.id,
     )

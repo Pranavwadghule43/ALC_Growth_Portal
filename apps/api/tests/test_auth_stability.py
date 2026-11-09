@@ -32,6 +32,7 @@ from app.database import Base, get_db
 from app.enums import Role
 from app.main import app
 from app.models import DCU, RCU, AuthSession, RefreshToken, User
+from app.routes import auth as auth_routes
 from app.services.sessions import new_session
 from tests.conftest import login
 
@@ -191,6 +192,23 @@ async def test_self_password_change_keeps_current_session_only(client, seeded):
     assert (await refresh_with(client, other_browser)).status_code == 401
     assert (await refresh_with(client, current)).status_code == 401
     assert (await refresh_with(client, replacement)).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_login_releases_database_transaction_before_argon2(
+    client, session, seeded, monkeypatch
+):
+    observed = []
+    original = auth_routes.verify_password_async
+
+    async def observe(password, encoded):
+        observed.append(session.in_transaction())
+        return await original(password, encoded)
+
+    monkeypatch.setattr(auth_routes, "verify_password_async", observe)
+    response = await login(client, *ALC_A)
+    assert response.status_code == 200
+    assert observed == [False]
 
 
 # --------------------------------------------------------------------------- #

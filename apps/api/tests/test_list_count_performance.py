@@ -31,7 +31,7 @@ QUEUE = (S.SUBMITTED, S.RESUBMITTED, S.UNDER_REVIEW)
 
 
 @pytest_asyncio.fixture
-async def branches(session, seeded):
+async def branches(session, seeded, seed_password_hashes):
     """DCU Nashik: SBU 4 (Centres A, C) and SBU 6 (Centre B) — conftest's hierarchy.
     DCU X (second RCU branch): SBU X with Centres D and E. DCU Empty: no SBU at all.
     Every centre has two activities of every status (so two drafts each)."""
@@ -50,14 +50,15 @@ async def branches(session, seeded):
     session.add_all([alc_d, alc_e])
     await session.flush()
     nashik = await session.scalar(select(DCU).where(DCU.code == "DCU_NASHIK"))
+    password_hash = seed_password_hashes[DCU_PW]
     session.add_all([
-        User(username="dcu-nashik", password_hash=hash_password(DCU_PW), role=Role.DCU,
+        User(username="dcu-nashik", password_hash=password_hash, role=Role.DCU,
              dcu_id=nashik.id),
-        User(username="dcu-kx", password_hash=hash_password(DCU_PW), role=Role.DCU,
+        User(username="dcu-kx", password_hash=password_hash, role=Role.DCU,
              dcu_id=dcu_x.id),
-        User(username="dcu-kempty", password_hash=hash_password(DCU_PW), role=Role.DCU,
+        User(username="dcu-kempty", password_hash=password_hash, role=Role.DCU,
              dcu_id=dcu_empty.id),
-        User(username="sbu-kx", password_hash=hash_password(DCU_PW), role=Role.SBU,
+        User(username="sbu-kx", password_hash=password_hash, role=Role.SBU,
              sbu_id=sbu_x.id),
     ])
     alcs = {"a": seeded["alc_a"].id, "b": seeded["alc_b"].id, "c": seeded["alc_c"].id,
@@ -178,17 +179,18 @@ async def test_empty_scope_and_empty_filters_total_zero(client, branches):
 # --------------------------------------------------------------------------- #
 # Count statement shape
 # --------------------------------------------------------------------------- #
-# Statements per request, identical before and after Phase 4K (measured on e81867b): the
-# user lookup and its hierarchy-availability loaders, then count + page + page summaries.
+# Statements per request after the auth hierarchy lookup was collapsed into session
+# validation: auth + count + page + page summaries.  Activity relationships must not
+# be lazy-loaded by these portal list endpoints.
 LISTS = [
     (("admin", "StrongAdminPass!", "ADMIN"), "/api/admin/activities", {}, 4),
     (("admin", "StrongAdminPass!", "ADMIN"), "/api/admin/verification-queue",
      {"queue_only": "true", "search": "Centre"}, 4),
-    (("dcu-nashik", DCU_PW), "/api/portal/verification", {}, 6),
-    (("dcu-nashik", DCU_PW), "/api/portal/verification", {"queue_only": "true"}, 6),
-    (("sbu-4", "StrongSbuPass4!"), "/api/portal/verification", {"search": "Centre"}, 7),
-    (("dcu-nashik", DCU_PW), "/api/portal/activities", {}, 6),
-    (("00010001", "StrongAlcPassA!"), "/api/portal/activities", {}, 8),
+    (("dcu-nashik", DCU_PW), "/api/portal/verification", {}, 4),
+    (("dcu-nashik", DCU_PW), "/api/portal/verification", {"queue_only": "true"}, 4),
+    (("sbu-4", "StrongSbuPass4!"), "/api/portal/verification", {"search": "Centre"}, 4),
+    (("dcu-nashik", DCU_PW), "/api/portal/activities", {}, 4),
+    (("00010001", "StrongAlcPassA!"), "/api/portal/activities", {}, 4),
 ]
 
 

@@ -34,6 +34,8 @@ PREVIEWABLE_TYPES = {
     "image/png": ".png",
     "image/webp": ".webp",
     "application/pdf": ".pdf",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
 }
 FALLBACK_TYPE = "application/octet-stream"
 MAX_FILENAME_LENGTH = 150
@@ -94,7 +96,29 @@ class EvidenceStreamingResponse(StreamingResponse):
             self.storage_stream.close()
 
 
-async def evidence_response(evidence: ActivityEvidence) -> EvidenceStreamingResponse:
+class RangeStream(ObjectStream):
+    """Bounded-memory authenticated range delivery over the existing private stream."""
+
+    def __init__(self, source, start, end):
+        self.source, self.start, self.end = source, start, end
+        self.size = end - start + 1
+
+    async def chunks(self):
+        offset = 0
+        async for chunk in self.source.chunks():
+            following = offset + len(chunk)
+            if following > self.start and offset <= self.end:
+                yield chunk[max(0, self.start-offset):min(len(chunk), self.end-offset+1)]
+            offset = following
+            if offset > self.end:
+                break
+
+    def close(self):
+        self.source.close()
+
+
+async def evidence_response(evidence: ActivityEvidence,
+                            range_header: str | None = None) -> EvidenceStreamingResponse:
     """Stream already-authorized evidence from private storage.
 
     A missing object is a 404, like evidence that does not exist; any other storage failure is
@@ -118,7 +142,28 @@ async def evidence_response(evidence: ActivityEvidence) -> EvidenceStreamingResp
     }
     if stream.size is not None:
         headers["Content-Length"] = str(stream.size)
-    return EvidenceStreamingResponse(stream, evidence_id, media_type=media_type, headers=headers)
+    status = 200
+    if range_header and stream.size is not None:
+        size = stream.size
+        match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header.strip())
+        try:
+            if not match or not any(match.groups()):
+                raise ValueError
+            left, right = match.groups()
+            start = int(left) if left else max(0, size-int(right))
+            end = min(int(right), size-1) if left and right else size-1
+            if start > end or start >= size:
+                raise ValueError
+        except ValueError:
+            stream.close()
+            raise HTTPException(416, "Invalid evidence byte range",
+                                headers={"Content-Range": f"bytes */{size}"}) from None
+        stream = RangeStream(stream, start, end)
+        headers.update({"Content-Range": f"bytes {start}-{end}/{size}",
+                        "Content-Length": str(end-start+1), "Accept-Ranges": "bytes"})
+        status = 206
+    return EvidenceStreamingResponse(stream, evidence_id, media_type=media_type,
+                                     headers=headers, status_code=status)
 
 
 def content_path_for(route_name: str, evidence_id: uuid.UUID, app) -> str:

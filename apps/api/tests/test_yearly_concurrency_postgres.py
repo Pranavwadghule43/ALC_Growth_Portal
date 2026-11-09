@@ -2,7 +2,7 @@
 import asyncio
 import os
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 import pytest_asyncio
@@ -23,9 +23,13 @@ from app.models import (
     YearlyActivityCompletion,
     YearlyActivityDCURun,
     YearlyActivityDefinition,
+    YearlyActivityEvidence,
+    YearlyActivityReview,
+    YearlyActivitySubmission,
 )
 from app.services import yearly_activities as service
-from app.yearly_schemas import CompletionIn
+from app.services import yearly_submissions
+from app.yearly_schemas import YearlyReviewIn
 
 PG_URL = os.environ.get("ALC_TEST_POSTGRES_URL")
 SAFE = bool(PG_URL and os.environ.get("ALC_ISOLATED_TEST") == "1"
@@ -70,11 +74,20 @@ async def postgres_world():
                 scheduled_start_date=date(2026, 1, 1), scheduled_end_date=date(2026, 1, 1))
             db.add(run)
             await db.flush()
-            db.add(YearlyActivityCompletion(
+            participation = YearlyActivityCompletion(
                 yearly_activity_id=definition.id, yearly_activity_dcu_run_id=run.id,
-                alc_id=alc.id, snapshot_sbu_id=sbu.id, completed=True))
+                alc_id=alc.id, snapshot_sbu_id=sbu.id, completed=None)
+            db.add(participation)
+            await db.flush()
+            sub = YearlyActivitySubmission(participation_id=participation.id, status='SUBMITTED',
+                revision=1, completion_date=date(2026,1,1), remarks='Submitted synthetic proof')
+            db.add(sub)
+            await db.flush()
+            db.add(YearlyActivityEvidence(submission_id=sub.id, storage_key='synthetic/proof',
+                original_filename='proof.png', mime_type='image/png', file_size=10, sha256='a'*64,
+                submitted_at=datetime.now(timezone.utc)))
             await db.commit()
-            identifiers = actor.id, run.id, alc.id, definition.id
+            identifiers = actor.id, run.id, sub.id, definition.id
         yield maker, identifiers
     finally:
         await engine.dispose()
@@ -89,7 +102,7 @@ def request():
                     "headers": [], "client": ("127.0.0.1", 0)})
 
 
-async def test_waiting_mark_is_rejected_after_finalization_commits(postgres_world):
+async def test_waiting_review_is_rejected_after_finalization_commits(postgres_world):
     maker, (actor_id, run_id, alc_id, definition_id) = postgres_world
     async with maker() as finalizer, maker() as marker:
         await finalizer.scalar(select(YearlyActivityDCURun).where(
@@ -98,8 +111,8 @@ async def test_waiting_mark_is_rejected_after_finalization_commits(postgres_worl
 
         async def mark():
             try:
-                await service.mark_completion(marker, actor, run_id, alc_id,
-                                              CompletionIn(completed=False), request())
+                await yearly_submissions.review(marker, actor, alc_id,
+                    YearlyReviewIn(decision="VERIFY", revision=1), request())
             except HTTPException as exc:
                 await marker.rollback()
                 return exc.status_code
@@ -111,33 +124,35 @@ async def test_waiting_mark_is_rejected_after_finalization_commits(postgres_worl
             assert not waiting.done(), "mark must wait for the locked run"
             assert (await finalizer.scalars(service.eligible_activity_ids(2026))).all() == []
             final_actor = await finalizer.get(User, actor_id)
+            resolved = await finalizer.get(YearlyActivitySubmission, alc_id)
+            resolved.status = 'REJECTED'  # synthetic terminal state before closing
+            await finalizer.flush()
             await service.finalize_run(finalizer, final_actor, run_id, request())
             assert await asyncio.wait_for(waiting, timeout=5) == 409
             assert (await finalizer.scalars(service.eligible_activity_ids(2026))).all() == [
                 definition_id]
-            assert await finalizer.scalar(select(YearlyActivityCompletion.completed)) is True
+            assert await finalizer.scalar(select(YearlyActivitySubmission.status)) == "REJECTED"
         finally:
             if not waiting.done():
                 waiting.cancel()
                 await asyncio.gather(waiting, return_exceptions=True)
 
 
-async def test_parallel_marks_keep_one_row_and_two_attributed_audits(postgres_world):
-    maker, (actor_id, run_id, alc_id, _) = postgres_world
-
-    async def mark(value):
+async def test_parallel_reviews_have_one_winner_and_one_immutable_decision(postgres_world):
+    maker, (actor_id, run_id, sub_id, _) = postgres_world
+    async def review(action):
         async with maker() as db:
             actor = await db.get(User, actor_id)
-            return await service.mark_completion(db, actor, run_id, alc_id,
-                                                 CompletionIn(completed=value), request())
-
-    results = await asyncio.gather(mark(False), mark(True))
-    assert {row["completed"] for row in results} == {False, True}
+            try:
+                await yearly_submissions.review(db, actor, sub_id,
+                    YearlyReviewIn(decision=action, revision=1, remarks='Reviewed proof'),
+                    request())
+                return 200
+            except HTTPException as exc:
+                await db.rollback()
+                return exc.status_code
+    assert sorted(await asyncio.gather(review('VERIFY'), review('REJECT'))) == [200, 409]
     async with maker() as db:
-        assert await db.scalar(select(func.count(YearlyActivityCompletion.id))) == 1
-        assert await db.scalar(select(func.count(AuditLog.id)).where(
-            AuditLog.action == "yearly_activity_completion_marked")) == 2
-        audits = (await db.scalars(select(AuditLog).order_by(AuditLog.created_at))).all()
-        value = await db.scalar(select(YearlyActivityCompletion.completed))
-        assert value == audits[-1].audit_metadata["completed"]
-        assert all(audit.actor_user_id == actor_id for audit in audits)
+        assert await db.scalar(select(func.count(YearlyActivitySubmission.id))) == 1
+        assert await db.scalar(select(func.count(YearlyActivityReview.id))) == 1
+        assert await db.scalar(select(func.count(AuditLog.id))) == 1

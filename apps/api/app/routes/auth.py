@@ -97,44 +97,78 @@ async def login(
     payload: LoginIn, request: Request, response: Response, db: AsyncSession = Depends(get_db)
 ):
     """Operational-portal login for DCU, SBU and ALC only. ADMIN accounts are rejected here
-    and must use ``/auth/admin-login``. The role is derived server-side from the identifier:
-    a DCU or SBU authenticates with a username/email, an ALC with its unique ALC code. The
-    client never sends a trusted role."""
+    and must use ``/auth/admin-login``. Operational usernames are resolved first. If none
+    matches, an ALC centre code is accepted only when exactly one active ALC account belongs
+    to that centre. The client never sends a trusted role."""
     identifier = payload.identifier.lower()
     # Rate limits run before any Argon2 work; a throttled attempt gets 429 and no hashing.
     attempt = await begin_login_attempt(request, "portal", identifier)
-    query = (
-        select(User)
-        .outerjoin(ALC, User.alc_id == ALC.id)
-        .options(*AUTH_USER_LOADERS)
-        .where(
-            or_(
-                and_(
-                    User.role.in_([Role.DCU, Role.SBU]),
-                    or_(
-                        func.lower(User.username) == identifier,
+    # Username is the unambiguous identity for every operational account. DCU/SBU email is
+    # also supported. Centre code is deliberately a fallback: a legacy ALC whose username
+    # equals its centre code remains independently accessible even when that centre later
+    # gains another account.
+    direct_matches = list(
+        await db.scalars(
+            select(User)
+            .where(
+                User.role.in_([Role.DCU, Role.SBU, Role.ALC]),
+                or_(
+                    func.lower(User.username) == identifier,
+                    and_(
+                        User.role.in_([Role.DCU, Role.SBU]),
                         func.lower(User.email) == identifier,
                     ),
                 ),
-                and_(User.role == Role.ALC, func.lower(ALC.alc_code) == identifier),
             )
+            .limit(2)
         )
     )
-    user = await db.scalar(query)
-    # Exactly one Argon2 verification on every path (unknown identifier -> dummy hash;
-    # existing account, active or not -> its own hash), so the response time does not reveal
-    # whether the identifier exists. Only then are the account checks applied.
-    password_ok = await verify_password_async(payload.password, login_password_hash(user))
-    if not user or not user.is_active or not password_ok:
-        await record_audit(db, "login_failed", "user", request=request)
-        log.info("login_failed", scope="portal")  # no identifier: it may be a real username
-        await db.commit()
-        raise HTTPException(
-            status_code=401, detail="Invalid username/ALC code or password"
+    matches = direct_matches
+    if not matches:
+        # Only active accounts participate in the convenience centre-code login. Zero or
+        # multiple matches are both handled like an unknown identifier and use the dummy
+        # password hash below, so account count/availability is not disclosed.
+        matches = list(
+            await db.scalars(
+                select(User)
+                .join(ALC, User.alc_id == ALC.id)
+                .where(
+                    User.role == Role.ALC,
+                    User.is_active.is_(True),
+                    func.lower(ALC.alc_code) == identifier,
+                )
+                .limit(2)
+            )
         )
-    # Inactive ALC, or a DCU login not linked to exactly one active DCU: no session.
+    user = matches[0] if len(matches) == 1 else None
+    candidate_id = user.id if user is not None else None
+    candidate_hash = login_password_hash(user)
+    candidate_role = user.role if user is not None else None
+    candidate_active = bool(user and user.is_active)
+    # End the read-only transaction before queued/CPU-heavy Argon2 work. ``commit`` is
+    # intentional: AsyncSession.rollback() expires every ORM object in the identity map, while
+    # this application uses expire_on_commit=False. This releases the checkout without causing
+    # later async lazy-loads / MissingGreenlet failures. A successful password is
+    # never enough on its own: the account is reloaded and revalidated afterwards, and
+    # _establish_session locks it once more before issuing credentials.
+    await db.commit()
+    password_ok = await verify_password_async(payload.password, candidate_hash)
+    if candidate_id is None or not candidate_active or not password_ok:
+        await record_audit(db, "login_failed", "user", request=request)
+        log.info("login_failed", scope="portal")
+        await db.commit()
+        raise HTTPException(status_code=401, detail="Invalid username/ALC code or password")
+    user = await db.scalar(
+        select(User).options(*AUTH_USER_LOADERS).where(User.id == candidate_id)
+        .execution_options(populate_existing=True)
+    )
+    if (user is None or not user.is_active or user.password_hash != candidate_hash
+            or user.role != candidate_role):
+        await record_audit(db, "login_failed", "user", request=request)
+        await db.commit()
+        raise HTTPException(status_code=401, detail="Account changed; please sign in again")
     if not account_available(user):
-        await attempt.credentials_valid()  # right password: not a credential failure
+        await attempt.credentials_valid()
         log.info("login_refused", scope="portal", reason="account_unavailable",
                  user_id=str(user.id), role=user.role.value)
         raise HTTPException(status_code=401, detail="Account unavailable")
@@ -153,7 +187,6 @@ async def admin_login(
     attempt = await begin_login_attempt(request, "admin", identifier)
     query = (
         select(User)
-        .options(*USER_RESPONSE_LOADERS)
         .where(
             User.role == Role.ADMIN,
             or_(
@@ -163,13 +196,26 @@ async def admin_login(
         )
     )
     user = await db.scalar(query)
-    # Same equal-work rule as the operational login (see ``login``).
-    password_ok = await verify_password_async(payload.password, login_password_hash(user))
-    if not user or not user.is_active or not password_ok:
+    candidate_id = user.id if user is not None else None
+    candidate_hash = login_password_hash(user)
+    candidate_role = user.role if user is not None else None
+    candidate_active = bool(user and user.is_active)
+    await db.commit()  # release the pooled DB connection without expiring loaded ORM state
+    password_ok = await verify_password_async(payload.password, candidate_hash)
+    if candidate_id is None or not candidate_active or not password_ok:
         await record_audit(db, "admin_login_failed", "user", request=request)
         log.info("login_failed", scope="admin")
         await db.commit()
         raise HTTPException(status_code=401, detail="Invalid username or password")
+    user = await db.scalar(
+        select(User).options(*USER_RESPONSE_LOADERS).where(User.id == candidate_id)
+        .execution_options(populate_existing=True)
+    )
+    if (user is None or not user.is_active or user.password_hash != candidate_hash
+            or user.role != candidate_role):
+        await record_audit(db, "admin_login_failed", "user", request=request)
+        await db.commit()
+        raise HTTPException(status_code=401, detail="Account changed; please sign in again")
     await attempt.succeeded()
     return await _establish_session(user, request, response, db, action="admin_login")
 

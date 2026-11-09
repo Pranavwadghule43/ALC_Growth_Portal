@@ -1,0 +1,94 @@
+ALC Growth Portal — master change manifest — 2026-11-04
+
+JWT checkpoint (already committed) (30)
+apps/api/alembic/versions/20261103_0009_auth_sessions.py
+apps/api/app/auth.py
+apps/api/app/dependencies.py
+apps/api/app/models.py
+apps/api/app/routes/admin.py
+apps/api/app/routes/auth.py
+apps/api/app/routes/portal.py
+apps/api/app/services/sessions.py
+apps/api/scripts/cleanup_auth_sessions.py
+apps/api/tests/test_auth_session_concurrency.py
+apps/api/tests/test_auth_session_migration.py
+apps/api/tests/test_auth_stability.py
+apps/api/tests/test_dcu_hierarchy.py
+apps/api/tests/test_growth_challenge_migration.py
+apps/api/tests/test_password_security.py
+apps/api/tests/test_session_revocation_evidence.py
+apps/api/tests/test_yearly_activity_migration.py
+docs/AUTHORIZATION_ROUTE_MATRIX.md
+docs/PRODUCTION_READINESS_AND_YEARLY_ACTIVITIES_AUDIT.md
+docs/PRODUCTION_READINESS_CHECKLIST.md
+docs/SECURITY_AUDIT_EVIDENCE.md
+docs/SESSION_REVOCATION_REMEDIATION.md
+docs/audit-evidence/P1A_AUTH_TARGETED.txt
+docs/audit-evidence/P1A_BACKEND_FULL.txt
+docs/audit-evidence/P1A_CHANGED_FILES.txt
+docs/audit-evidence/P1A_FINAL_GIT_STATUS.txt
+docs/audit-evidence/P1A_POSTGRES.txt
+docs/audit-evidence/P1A_RUFF_FULL.txt
+docs/audit-evidence/P1A_RUFF_IMPLEMENTATION.txt
+docs/audit-evidence/VALIDATION_RESULTS.md
+
+Evidence workflow and regressions (24)
+apps/api/alembic/versions/20261104_0010_yearly_evidence.py
+apps/api/app/main.py
+apps/api/app/models.py
+apps/api/app/routes/yearly_activities.py
+apps/api/app/services/evidence_delivery.py
+apps/api/app/services/leaderboard.py
+apps/api/app/services/yearly_activities.py
+apps/api/app/services/yearly_submissions.py
+apps/api/app/upload_limits.py
+apps/api/app/yearly_schemas.py
+apps/api/tests/test_auth_session_migration.py
+apps/api/tests/test_evidence_delivery.py
+apps/api/tests/test_growth_challenge_migration.py
+apps/api/tests/test_yearly_activities.py
+apps/api/tests/test_yearly_activity_migration.py
+apps/api/tests/test_yearly_concurrency_postgres.py
+apps/api/tests/test_yearly_evidence_migration.py
+apps/api/tests/test_yearly_evidence_workflow.py
+apps/api/tests/test_yearly_leaderboard.py
+apps/web/src/components/YearlySubmissions.test.tsx
+apps/web/src/components/YearlySubmissions.tsx
+apps/web/src/components/leaderboard.tsx
+apps/web/src/pages/YearlyActivities.tsx
+apps/web/src/pages/yearlyActivities.test.tsx
+
+Dependency remediation and validation configuration (8)
+apps/api/constraints-dev.txt
+apps/api/constraints-runtime.txt
+apps/api/pyproject.toml
+apps/api/tests/conftest.py
+apps/web/package-lock.json
+apps/web/package.json
+apps/web/src/pages/ActivityEditor.tsx
+apps/web/vite.config.ts
+
+Load/upload/recovery tooling (6)
+tests/load/README.md
+tests/load/isolated_drill.py
+tests/load/portal.k6.js
+tests/load/recovery_drill.py
+tests/load/run_isolated_load.py
+tests/load/upload_capacity.py
+
+Recovery/security/readiness documentation (11)
+docs/AUTHORIZATION_ROUTE_MATRIX.md
+docs/MASTER_IMPLEMENTATION_PRODUCTION_REPORT_20261104.md
+docs/PRODUCTION_READINESS_AND_YEARLY_ACTIVITIES_AUDIT.md
+docs/PRODUCTION_READINESS_CHECKLIST.md
+docs/SECURITY_AUDIT_EVIDENCE.md
+docs/YEARLY_ACTIVITY_EVIDENCE_WORKFLOW.md
+docs/audit-evidence/MASTER_CHANGED_FILES.txt
+docs/audit-evidence/MASTER_DEPENDENCY_REMEDIATION.md
+docs/audit-evidence/MASTER_GIT_STATUS.txt
+docs/audit-evidence/MASTER_RUNTIME_RESULTS.json
+docs/audit-evidence/VALIDATION_RESULTS.md
+
+Current uncommitted review candidate: 49 files.
+Excluded unrelated untracked screenshot: alc-growth-portal-ui.png
+Runtime secrets, credentials, .local, backups, environments, node_modules and build output excluded.

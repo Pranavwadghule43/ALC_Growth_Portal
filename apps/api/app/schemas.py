@@ -348,6 +348,7 @@ class DcuOut(ORMModel):
 
 class PasswordResetIn(BaseModel):
     password: str = Field(min_length=12, max_length=256)
+    user_id: uuid.UUID | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -357,6 +358,8 @@ class GrowthChallengeIn(BaseModel):
     """A global Growth Challenge period: both dates inclusive, any duration."""
 
     name: str = Field(min_length=2, max_length=150)
+    description: str = Field(default="", max_length=4000)
+    is_published: bool = True
     start_date: date
     end_date: date
     prospects_target: int = Field(default=40, ge=0, le=1_000_000)
@@ -380,6 +383,8 @@ class GrowthChallengePatch(BaseModel):
     """Partial update; the merged period is validated against the stored challenge."""
 
     name: str | None = Field(default=None, min_length=2, max_length=150)
+    description: str | None = Field(default=None, max_length=4000)
+    is_published: bool | None = None
     start_date: date | None = None
     end_date: date | None = None
     prospects_target: int | None = Field(default=None, ge=0, le=1_000_000)

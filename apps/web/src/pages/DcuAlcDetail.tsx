@@ -11,6 +11,7 @@ interface AlcDetail {
   alc: { id: string; alc_code: string; alc_name: string; status: string; sbu: UnitRef | null; dcu: UnitRef | null }
   summary: ActivityMetrics & { partners: number; active_partners: number }
   activities: ActivityListItem[]; correction_required: ActivityListItem[]; partners: DirectoryPartner[]
+  alc_users: { id: string; username: string; is_active: boolean }[]
 }
 
 function ActivityTable({ rows }: { rows: ActivityListItem[] }) {
@@ -22,21 +23,23 @@ function ActivityTable({ rows }: { rows: ActivityListItem[] }) {
 // may still reset the centre's login password, as SBU supervisors can.
 export default function DcuAlcDetail() {
   const { id } = useParams()
-  const [password, setPassword] = useState(''); const [confirmPassword, setConfirmPassword] = useState(''); const [toast, setToast] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false)
+  const [password, setPassword] = useState(''); const [confirmPassword, setConfirmPassword] = useState(''); const [selectedUser, setSelectedUser] = useState(''); const [toast, setToast] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false)
   const closeToast = useCallback(() => setToast(''), [])
   const q = useQuery({ queryKey: ['dcu-alc', id], queryFn: () => api.get<AlcDetail>(`/portal/alcs/${id}`) })
   async function resetPassword(e: React.FormEvent, centre: string) {
     e.preventDefault(); setError('')
     if (password !== confirmPassword) { setError('The two passwords do not match.'); return }
     if (!confirm(`Reset the password for ${centre}?\n\nThe centre will be signed out everywhere and must choose a new password at next login. Share the temporary password with them securely.`)) return
+    const userId = selectedUser || (q.data?.alc_users.length === 1 ? q.data.alc_users[0]?.id ?? '' : '')
+    if (!userId) { setError('Select the ALC user account to reset.'); return }
     setBusy(true)
-    try { await api.post(`/portal/alcs/${id}/reset-password`, { password }); setPassword(''); setConfirmPassword(''); setToast('Temporary password set. The centre has been signed out and must change it at next login.') }
+    try { await api.post(`/portal/alcs/${id}/reset-password`, { password, user_id: userId }); setPassword(''); setConfirmPassword(''); setToast('Temporary password set. The selected account has been signed out and must change it at next login.') }
     catch (caught) { setError(caught instanceof Error ? caught.message : 'Password reset failed') }
     finally { setBusy(false) }
   }
   if (q.isLoading) return <Loading />
   if (q.error || !q.data) return <ErrorState error={q.error} />
-  const { alc, summary: s, activities, correction_required: corrections, partners } = q.data
+  const { alc, summary: s, activities, correction_required: corrections, partners, alc_users: alcUsers } = q.data
   return <>
     <Link to={alc.sbu ? `/portal/sbus/${alc.sbu.id}` : '/portal/alcs'} className="mb-3 inline-flex items-center gap-1 text-sm font-semibold text-slate-500 hover:text-teal"><ChevronLeft className="h-4 w-4" />{alc.sbu ? `Back to ${alc.sbu.code}` : 'All ALCs'}</Link>
     <PageHeader title={alc.alc_name} description={`ALC ${alc.alc_code}`} actions={<Badge status={alc.status} />} />
@@ -56,7 +59,7 @@ export default function DcuAlcDetail() {
     {activities.length ? <ActivityTable rows={activities} /> : <Empty title="No submitted activities" message="Activities appear here once the ALC submits them. Drafts stay private to the ALC." />}
     <h2 className="mb-3 mt-7 font-bold text-navy">Partners</h2>
     {partners.length ? <div className="table-wrap"><table><thead><tr><th>Partner</th><th>Collaboration type</th><th>Ecosystem</th><th>Contact</th><th className="text-right">Activities</th><th>Last activity</th><th>Status</th></tr></thead><tbody>{partners.map(p => <tr key={p.id}><td className="font-semibold">{p.partner_name}</td><td>{p.partner_type}</td><td>{p.ecosystem}</td><td>{p.contact_person ?? '—'}<p className="text-xs text-slate-500">{p.phone ?? p.email}</p></td><td className="text-right">{p.activity_count}</td><td>{formatDate(p.last_activity ?? undefined)}</td><td><Badge status={p.status} /></td></tr>)}</tbody></table></div> : <Empty title="No partners" message="This centre has not added any partners." />}
-    <section className="panel mt-7 max-w-xl p-5"><h2 className="font-bold text-navy">Reset ALC login password</h2><p className="mt-1 text-sm text-slate-500">Set a temporary password for this centre's login. The current password is never shown. The centre is signed out and must choose its own password at next login.</p><form onSubmit={e => resetPassword(e, `${alc.alc_code} · ${alc.alc_name}`)} className="mt-4 space-y-3"><div><label htmlFor="alc-password">New temporary password</label><input id="alc-password" className="mt-1" type="password" minLength={12} required autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} /><p className="mt-1 text-xs text-slate-500">At least 12 characters.</p></div><div><label htmlFor="alc-password-confirm">Confirm temporary password</label><input id="alc-password-confirm" className="mt-1" type="password" minLength={12} required autoComplete="new-password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} />{confirmPassword && confirmPassword !== password && <p className="mt-1 text-xs text-red-700">Does not match yet.</p>}</div>{error && <p role="alert" className="text-sm text-red-700">{error}</p>}<button className="btn-primary" disabled={busy}>{busy ? 'Resetting…' : 'Reset password'}</button></form></section>
+    <section className="panel mt-7 max-w-xl p-5"><h2 className="font-bold text-navy">Reset ALC login password</h2><p className="mt-1 text-sm text-slate-500">Set a temporary password for one ALC user account. The current password is never shown.</p><form onSubmit={e => resetPassword(e, `${alc.alc_code} · ${alc.alc_name}`)} className="mt-4 space-y-3">{alcUsers.length > 1 && <div><label htmlFor="alc-user">ALC user account</label><select id="alc-user" className="mt-1" required value={selectedUser} onChange={e => setSelectedUser(e.target.value)}><option value="">Select account</option>{alcUsers.map(account => <option key={account.id} value={account.id}>{account.username}{account.is_active ? '' : ' (inactive)'}</option>)}</select></div>}<div><label htmlFor="alc-password">New temporary password</label><input id="alc-password" className="mt-1" type="password" minLength={12} required autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} /><p className="mt-1 text-xs text-slate-500">At least 12 characters.</p></div><div><label htmlFor="alc-password-confirm">Confirm temporary password</label><input id="alc-password-confirm" className="mt-1" type="password" minLength={12} required autoComplete="new-password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} />{confirmPassword && confirmPassword !== password && <p className="mt-1 text-xs text-red-700">Does not match yet.</p>}</div>{error && <p role="alert" className="text-sm text-red-700">{error}</p>}<button className="btn-primary" disabled={busy}>{busy ? 'Resetting…' : 'Reset password'}</button></form></section>
     {toast && <Toast message={toast} onClose={closeToast} />}
   </>
 }

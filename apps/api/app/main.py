@@ -8,6 +8,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
@@ -19,7 +20,9 @@ from app.observability import (
     mark_logged,
     was_logged,
 )
+from app.response_cache import invalidate
 from app.routes import admin, auth, health, leaderboard, portal, yearly_activities
+from app.upload_limits import YearlyUploadLimit
 
 # JSON lines in production, readable lines in development/test; level from LOG_LEVEL.
 configure_logging(settings.app_env, settings.log_level)
@@ -72,7 +75,35 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class CacheInvalidationMiddleware(BaseHTTPMiddleware):
+    """Advance all derived-read generations after a successful committed mutation.
+
+    These three API families contain every mutation capable of changing dashboard,
+    leaderboard, yearly-definition, or hierarchy scope data. Broad invalidation is
+    intentional: correctness is preferred to preserving a marginal cache hit.
+    """
+
+    MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+    PREFIXES = ("/api/admin/", "/api/portal/", "/api/yearly-activities/")
+    NAMESPACES = ("dashboard", "leaderboard", "yearly-definitions")
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        if (
+            request.method in self.MUTATING_METHODS
+            and request.url.path.startswith(self.PREFIXES)
+            and response.status_code < 400
+        ):
+            await invalidate(
+                self.NAMESPACES,
+                reason=f"{request.method} {request.url.path}",
+            )
+        return response
+
+
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(CacheInvalidationMiddleware)
+app.add_middleware(YearlyUploadLimit)
 # Added last = outermost: request id, request log and the safety net for unexpected errors.
 app.add_middleware(RequestContextMiddleware)
 
@@ -142,6 +173,29 @@ async def validation_error(_: Request, exc: RequestValidationError):
                 "details": validation_details(exc),
             }
         },
+    )
+
+
+@app.exception_handler(SQLAlchemyTimeoutError)
+async def database_pool_timeout(request: Request, exc: SQLAlchemyTimeoutError):
+    """Fail fast when the SQLAlchemy connection pool is exhausted.
+
+    This exception type is the pool checkout timeout; ordinary database statement and
+    integrity errors are not remapped here. The response exposes no database detail.
+    """
+    if not was_logged(exc):
+        mark_logged(exc)
+        structlog.get_logger("app.request").warning(
+            "database_pool_timeout", path=request.url.path,
+            pool_size=settings.db_pool_size, max_overflow=settings.db_max_overflow,
+        )
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "1"},
+        content={"error": {
+            "code": "SERVICE_BUSY",
+            "message": "The service is temporarily busy. Please try again.",
+        }},
     )
 
 

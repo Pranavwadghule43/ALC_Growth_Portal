@@ -12,7 +12,7 @@ interface Row { id: string; alc_code: string; alc_name: string; prospects: numbe
 // duration). `periods` holds only the ALCs that have their own override, by ALC id.
 type RowPeriod = ChallengePeriod & { targets?: Record<string, number> }
 // A configured global challenge (`challenges`, newest period first).
-interface ChallengeConfig { id: string; name: string; start_date: string; end_date: string; targets: Record<string, number>; status: ChallengePeriod['status']; total_days: number }
+interface ChallengeConfig { id: string; name: string; description: string; is_published: boolean; start_date: string; end_date: string; targets: Record<string, number>; status: ChallengePeriod['status']; total_days: number }
 interface ChallengePage extends Page<Row> {
   targets: Record<string, number>
   default_period?: RowPeriod
@@ -20,7 +20,7 @@ interface ChallengePage extends Page<Row> {
   challenges?: ChallengeConfig[]
   today?: string
 }
-type FormState = { id: string | null; name: string; start_date: string; end_date: string } & Record<TargetKey, string>
+type FormState = { id: string | null; name: string; description: string; is_published: boolean; start_date: string; end_date: string } & Record<TargetKey, string>
 
 // Server-side paginated and searchable: every ALC is reachable, one page is fetched at a time.
 const CHALLENGE_PAGE_SIZE = 100
@@ -30,7 +30,7 @@ function formFor(challenge: ChallengeConfig | null, today: string, targets: Reco
   const source = challenge?.targets ?? targets
   const target = (key: TargetKey) => String(source[key] ?? DEFAULT_TARGETS[key])
   return {
-    id: challenge?.id ?? null, name: challenge?.name ?? 'Growth Challenge',
+    id: challenge?.id ?? null, name: challenge?.name ?? 'Growth Challenge', description: challenge?.description ?? '', is_published: challenge?.is_published ?? true,
     start_date: challenge?.start_date ?? today, end_date: challenge?.end_date ?? '',
     prospects: target('prospects'), meetings: target('meetings'), pilots: target('pilots'), partnerships: target('partnerships'),
   }
@@ -51,7 +51,7 @@ function ChallengeForm({ initial, onSaved, onCancel }: { initial: FormState; onS
     event.preventDefault(); setError('')
     if (backwards) { setError('End date must be on or after the start date.'); return }
     const body = {
-      name: form.name.trim(), start_date: form.start_date, end_date: form.end_date,
+      name: form.name.trim(), description: form.description.trim(), is_published: form.is_published, start_date: form.start_date, end_date: form.end_date,
       prospects_target: Number(form.prospects), meetings_target: Number(form.meetings),
       pilots_target: Number(form.pilots), partnerships_target: Number(form.partnerships),
     }
@@ -68,6 +68,8 @@ function ChallengeForm({ initial, onSaved, onCancel }: { initial: FormState; onS
     <div className="md:col-span-2"><label htmlFor="gc-name">Challenge name</label><input id="gc-name" className="mt-1" required minLength={2} maxLength={150} value={form.name} onChange={e => set('name', e.target.value)} /></div>
     <div><label htmlFor="gc-start">Start date</label><input id="gc-start" className="mt-1" type="date" required value={form.start_date} onChange={e => set('start_date', e.target.value)} /></div>
     <div><label htmlFor="gc-end">End date</label><input id="gc-end" className="mt-1" type="date" required min={form.start_date || undefined} value={form.end_date} onChange={e => set('end_date', e.target.value)} /></div>
+    <div className="md:col-span-4"><label htmlFor="gc-description">Description</label><textarea id="gc-description" className="mt-1" maxLength={4000} rows={3} value={form.description} onChange={e => set('description', e.target.value)} /></div>
+    <label className="flex items-center gap-2 md:col-span-4"><input type="checkbox" checked={form.is_published} onChange={e => setForm(current => ({ ...current, is_published: e.target.checked }))} /> Published to DCU, SBU and ALC users</label>
     {TARGET_KEYS.map(key => <div key={key}><label htmlFor={`gc-${key}`} className="capitalize">{key} target</label><input id={`gc-${key}`} className="mt-1" type="number" required min={0} max={1000000} step={1} value={form[key]} onChange={e => set(key, e.target.value)} /></div>)}
     <p className="text-sm text-slate-600 md:col-span-4" aria-live="polite">{backwards ? 'End date is before the start date.' : length ? `Duration: ${length} ${length === 1 ? 'day' : 'days'} (both dates included).` : 'Choose the start and end dates; the challenge can run for any number of days.'}</p>
     {length > LONG_CHALLENGE_DAYS && <p role="note" className="text-sm text-amber-800 md:col-span-4">This is a long challenge ({length} days). Please check the dates; you can still save it.</p>}
@@ -113,7 +115,7 @@ export default function AdminChallenge() {
       </div>
       {current.configured && <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100" role="progressbar" aria-label="Challenge time elapsed" aria-valuemin={0} aria-valuemax={100} aria-valuenow={challengeTimePercent(current)}><div className="h-full bg-navy" style={{ width: `${challengeTimePercent(current)}%` }} /></div>}
       {editing && <ChallengeForm key={editing.id ?? 'new'} initial={editing} onSaved={saved} onCancel={() => setEditing(null)} />}
-      {challenges.length > 1 && !editing && <div className="table-wrap mt-4"><table><thead><tr><th>Configured periods</th><th>Dates</th><th>Duration</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{challenges.map(c => <tr key={c.id}><td><b>{c.name}</b></td><td className="whitespace-nowrap">{formatDate(c.start_date)} – {formatDate(c.end_date)}</td><td>{c.total_days} {c.total_days === 1 ? 'day' : 'days'}</td><td><Badge status={c.status} /></td><td><button className="btn-secondary" onClick={() => open(c)}>Edit</button></td></tr>)}</tbody></table></div>}
+      {challenges.length > 1 && !editing && <div className="table-wrap mt-4"><table><thead><tr><th>Configured periods</th><th>Dates</th><th>Duration</th><th>Status</th><th>Visibility</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{challenges.map(c => <tr key={c.id}><td><b>{c.name}</b>{c.description && <p className="text-xs text-slate-500">{c.description}</p>}</td><td className="whitespace-nowrap">{formatDate(c.start_date)} – {formatDate(c.end_date)}</td><td>{c.total_days} {c.total_days === 1 ? 'day' : 'days'}</td><td><Badge status={c.status} /></td><td>{c.is_published ? 'Published' : 'Draft'}</td><td><button className="btn-secondary" onClick={() => open(c)}>Edit</button></td></tr>)}</tbody></table></div>}
     </section>}
     <div className="panel mb-4 p-4"><input aria-label="Search ALCs" placeholder="Search ALC code or centre name" value={searchText} onChange={e => setSearchText(e.target.value)} /></div>
     {q.isLoading ? <Loading /> : q.error ? <ErrorState error={q.error} /> : !data?.items.length ? <Empty title="No ALCs match" message="Try a different ALC code or centre name." /> : <>

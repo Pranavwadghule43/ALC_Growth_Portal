@@ -6,6 +6,7 @@ import { challengePeriodSummary, type ChallengePeriod } from '../lib/challenge'
 import type { ActivityListItem, Task } from '../types'
 import { Badge, ErrorState, formatDate, formatNumber, Loading, MetricCard, PageHeader } from '../components/ui'
 import { AllRegionScores, RegionTop10 } from '../components/leaderboard'
+import YearlyActivityTracking from '../components/YearlyActivityTracking'
 
 interface Notice { id:string; title:string; message:string; is_read:boolean; created_at:string; entity_type?:string|null; entity_id?:string|null }
 interface Dashboard { activities: number; pending: number; verified: number; corrections: number; rejected: number; learners: number; leads: number; admissions: number; active_partners: number; recent_activities: ActivityListItem[]; upcoming_tasks: Task[]; notifications: Notice[]; challenge: Partial<ChallengePeriod> & { targets: Record<string,number>; achieved: Record<string,number> } }
@@ -34,6 +35,7 @@ export function AlcPerformanceOverview() {
 // Performance page (``AlcPerformanceOverview``).
 export default function AlcDashboard() {
   return <><PageHeader title="ALC Dashboard" description="How ALCs across the region compare on verified performance."/>
+    <YearlyActivityTracking/>
     <RegionTop10/>
     <AllRegionScores/>
   </>

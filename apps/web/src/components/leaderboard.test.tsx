@@ -25,7 +25,8 @@ class NoopResizeObserver { observe() {} unobserve() {} disconnect() {} }
 beforeEach(() => { vi.useFakeTimers(); get.mockReset(); vi.stubGlobal('ResizeObserver', NoopResizeObserver) })
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); document.body.innerHTML = '' })
 
-const URL = '/leaderboard/region-top10'
+const SCORES_URL = '/leaderboard/region-scores'
+const YEARLY_URL = '/yearly-activities/definitions?year=2026&page=1&page_size=25'
 const top: RegionTop10Data = {
   period: 'LIFETIME', generated_at: '2026-10-03T10:00:00Z', activity_year: 2026, eligible_yearly_activities: 3,
   items: [
@@ -41,9 +42,9 @@ function rows(container: Element) {
 
 describe('RegionTop10', () => {
   it('renders the ranked rows with every column and a 2-decimal score', async () => {
-    const api = fakeApi(get, path => { if (path === URL) return top; throw new Error(path) })
+    const api = fakeApi(get, path => { if (path === SCORES_URL) return top; throw new Error(path) })
     const { container } = await render(<RegionTop10 />)
-    expect(api.calls).toEqual([URL])
+    expect(api.calls).toEqual([SCORES_URL])
     expect([...container.querySelectorAll('thead th')].map(th => th.textContent)).toEqual([
       'Rank', 'ALC Code', 'ALC Name', 'SBU', 'DCU', 'Verified Leads', 'Verified Admissions', 'Verified Activities', 'Active Partners', 'Yearly Completions', 'Score',
     ])
@@ -89,7 +90,6 @@ const alcDash = { activities: 5, pending: 1, verified: 3, corrections: 0, reject
 const adminDash = { total_alcs: 3, active_alcs: 3, activities_submitted: 5, pending_verification: 1, verified_activities: 3, correction_required: 0, rejected_activities: 1, verified_learners: 10, verified_leads: 20, verified_admissions: 2, active_partnerships: 2, status_distribution: [], submission_trend: [], verified_categories: [] }
 
 // The complete regional ranking: two DCUs, four SBUs. Ranks/scores are regional and fixed.
-const SCORES_URL = '/leaderboard/region-scores'
 const nashik = { code: 'DCU_NASHIK', name: 'DCU Nashik' }
 const puneNorth = { code: 'DCU_PUNE_NORTH', name: 'DCU Pune North' }
 function scored(rank: number, code: string, sbu: string, dcu: typeof nashik, score: number): RegionTop10Item {
@@ -118,8 +118,9 @@ const options = (el: HTMLSelectElement) => [...el.options].map(o => o.textConten
 
 function leaderboardApi(dashboardPath?: string, dashboard?: unknown) {
   return fakeApi(get, path => {
-    if (path === URL) return top
     if (path === SCORES_URL) return allScores
+    if (path === '/portal/growth-challenges') return { items: [] }
+    if (path === '/yearly-activities/definitions') return { items: [], total: 0, summary: { completed_count: 0, total_applicable: 0, completion_percentage: 0 } }
     if (path === dashboardPath) return dashboard
     throw new Error(path)
   })
@@ -146,10 +147,12 @@ describe('dashboard composition', () => {
     expect(board[0]!.querySelectorAll('select')).toHaveLength(0)  // the Top 10 has no filters
     expect(select(container, 'DCU')).not.toBeNull()
     expect(select(container, 'SBU')).not.toBeNull()
-    expect(rows(container).map(r => r[1])).toEqual(['57210164', '57210168'])
+    expect(rows(container).map(r => r[1])).toEqual(allScores.items.slice(0, 10).map(item => item.alc_code))
     expect(directoryRows(container)).toHaveLength(6)  // regional, not limited to the user's unit
-    // The reference is static: only the dashboard and the two leaderboard requests are made.
-    expect(api.calls.sort()).toEqual([dashboardPath, URL, SCORES_URL].sort())
+    // The reference is static: only the dashboard and one shared leaderboard request are made.
+    const expected = dashboardPath === '/portal/dashboard'
+      ? [dashboardPath, SCORES_URL, '/portal/growth-challenges', YEARLY_URL] : [dashboardPath, SCORES_URL]
+    expect(api.calls.sort()).toEqual(expected.sort())
   })
 
   it('ALC dashboard: only Region Top 10 and All ALC Scores, no personal performance', async () => {
@@ -166,7 +169,7 @@ describe('dashboard composition', () => {
     expect(select(container, 'SBU')).not.toBeNull()
     expect(container.querySelectorAll(REFERENCE)).toHaveLength(0)
     for (const phrase of PERSONAL) expect(container.textContent).not.toContain(phrase)
-    expect(api.calls.sort()).toEqual([URL, SCORES_URL].sort())  // no personal dashboard request
+    expect(api.calls.sort()).toEqual([SCORES_URL, YEARLY_URL].sort())
   })
 
   it('ALC Performance: complete personal performance, no leaderboard', async () => {
@@ -182,7 +185,7 @@ describe('dashboard composition', () => {
   })
 
   it('a leaderboard failure leaves the dashboard and the reference working', async () => {
-    fakeApi(get, path => { if (path === URL || path === SCORES_URL) throw new ApiError('Leaderboard unavailable', 500); return sbuDash })
+    fakeApi(get, path => { if (path === SCORES_URL) throw new ApiError('Leaderboard unavailable', 500); if (path === '/portal/growth-challenges') return { items: [] }; if (path === '/yearly-activities/definitions') return { items: [], total: 0, summary: { completed_count: 0, total_applicable: 0, completion_percentage: 0 } }; return sbuDash })
     const { container } = await render(<SbuDashboard />)
     expect(container.querySelector('h1')?.textContent).toBe('SBU Dashboard')
     expect(container.textContent).toContain('Verified admissions')
@@ -267,14 +270,14 @@ describe('AllRegionScores', () => {
     expect(failed.container.textContent).toContain('Scores unavailable')
   })
 
-  it('selecting an activity year updates both leaderboard requests together', async () => {
+  it('selecting an activity year updates the one shared leaderboard request', async () => {
     const calls = leaderboardApi()
     const { container } = await render(<><RegionTop10 /><AllRegionScores /></>)
     await setInput(container.querySelector<HTMLInputElement>('input[aria-label="Top 10 activity year"]')!, '2025')
     await act(async () => { container.querySelector<HTMLFormElement>(`${BOARD} form`)!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
     await settle()
-    expect(calls.to(URL).at(-1)!.get('year')).toBe('2025')
     expect(calls.to(SCORES_URL).at(-1)!.get('year')).toBe('2025')
+    expect(calls.to(SCORES_URL)).toHaveLength(2)  // initial year + one shared 2025 refetch
     expect(container.querySelector<HTMLInputElement>('input[aria-label="All scores activity year"]')!.value).toBe('2025')
     expect(shown(container)).toEqual(regional)
   })

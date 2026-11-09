@@ -11,13 +11,14 @@ official performance.
 | Role | Portal | Login identifier |
 | --- | --- | --- |
 | `ADMIN` (shown as "Super Admin") | `/admin` | username / email + password |
+| `DCU` | `/portal` | username / email + password |
 | `SBU` | `/portal` | username / email + password |
-| `ALC` | `/portal` | ALC Code + password |
+| `ALC` | `/portal` | unique username, or centre code when exactly one active account matches |
 
 - **One common login** — there is no role selector. The backend authenticates the account
   and determines its role; the frontend never sends a trusted role.
 - **ADMIN** has global access through the Super Admin portal at `/admin`.
-- **SBU** and **ALC** share the operational portal at `/portal`; navigation and data are
+- **DCU**, **SBU** and **ALC** share the operational portal at `/portal`; navigation and data are
   scoped by role.
 
 ### Data isolation
@@ -62,10 +63,10 @@ activities of their assigned ALCs, and reset those ALC users' passwords.
   and frontend on the same registrable domain (for example `portal.example.org` and
   `api.example.org`) so SameSite cookies work.
 
-> **Status note:** the common login, the SBU role, and the unified `/portal` experience are
-> implemented on the `feature/common-login` and `feature/sbu-operational-portal` branches and
-> are not yet merged into `main`. `main` still carries the earlier role-selector login and
-> `/alc` routing. See `REMAINING-WORK.md` for the exact branch and completion status.
+> **Release note (2026-11-07):** the unified operational portal, persistent session revocation,
+> evidence-backed Yearly Activities, DCU hierarchy scope and production configuration guards are
+> present in the current worktree. Production deployment remains subject to the pre-deployment
+> checklist and a data-preserving migration rehearsal; no deployment is performed by this repository.
 
 ## Requirements
 

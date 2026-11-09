@@ -6,6 +6,7 @@ Built on the ``hier`` fixture from ``test_dcu_hierarchy``: DCU Nashik owns SBU 4
 the real 199-ALC master (71 / 58 / 70); DCU Pune North owns the test SBU ``TEST PN`` with
 conftest's Centres A, B and C; the demo SBU 1 has no DCU.
 """
+
 import csv
 import io
 import uuid
@@ -17,6 +18,7 @@ from app.models import Activity, ActivityEvidence, ActivityReview, Partner
 from app.services import alc_import
 from tests import test_dcu_hierarchy
 from tests.conftest import login
+from tests.test_activity_exports import StatementLog
 from tests.test_dcu_hierarchy import (
     MASTER,
     NASHIK_ALC_SBU4,
@@ -73,11 +75,17 @@ async def test_dcu_dashboard_identity_totals_and_sbu_breakdown(client, session, 
 
     await as_user(client, "dcu-nashik")
     assert (await decide(client, a7["id"], "verify")).status_code == 200
-    dash = (await client.get("/api/portal/dashboard")).json()
+    with StatementLog(session) as log:
+        dash_response = await client.get("/api/portal/dashboard")
+    dash = dash_response.json()
+    dashboard_queries = [statement for statement in log.statements if "FROM users" not in statement]
+    assert len(dashboard_queries) == 4  # rollup, SBU rows, recent rows, and review remark
     assert dash["role"] == "DCU"
     assert dash["unit"] == {
-        "type": "DCU", "id": str(hier["dcus"]["DCU_NASHIK"].id),
-        "code": "DCU_NASHIK", "name": "DCU Nashik",
+        "type": "DCU",
+        "id": str(hier["dcus"]["DCU_NASHIK"].id),
+        "code": "DCU_NASHIK",
+        "name": "DCU Nashik",
     }
     assert (dash["sbus"], dash["assigned_alcs"]) == (3, 199)
     assert (dash["active_alcs"], dash["inactive_alcs"]) == (198, 1)
@@ -94,7 +102,8 @@ async def test_dcu_dashboard_identity_totals_and_sbu_breakdown(client, session, 
     assert (breakdown["SBU 4"]["pending"], breakdown["SBU 4"]["partners"]) == (1, 1)
     assert (breakdown["SBU 7"]["verified"], breakdown["SBU 7"]["active_alcs"]) == (1, 69)
     assert {r["alc"]["alc_code"] for r in dash["recent_activities"]} == {
-        NASHIK_ALC_SBU4, NASHIK_ALC_SBU7,
+        NASHIK_ALC_SBU4,
+        NASHIK_ALC_SBU7,
     }
     assert {r["sbu_code"] for r in dash["recent_activities"]} == {"SBU 4", "SBU 7"}
 
@@ -147,7 +156,11 @@ async def test_dcu_sbu_directory_and_detail_map_alcs_to_sbus(client, session, hi
 
     options = (await client.get("/api/portal/lookups/alcs")).json()
     assert options["total"] == 199 and set(options["items"][0]) == {
-        "id", "alc_code", "alc_name", "sbu_id", "sbu_code",
+        "id",
+        "alc_code",
+        "alc_name",
+        "sbu_id",
+        "sbu_code",
     }
     narrowed = (await client.get(f"/api/portal/lookups/alcs?sbu_id={sbu4['id']}")).json()
     assert narrowed["total"] == 71
@@ -189,9 +202,7 @@ async def test_dcu_activity_and_queue_filtering(client, session, hier):
     assert {r["activity"]["id"] for r in sbu4["items"]} == {a4["id"], done["id"]}
     sbu7 = (await client.get(f"/api/portal/activities?sbu_id={hier['sbu7'].id}")).json()
     assert [a["id"] for a in sbu7["items"]] == [a7["id"]]
-    by_alc = (
-        await client.get(f"/api/portal/verification?alc_id={hier['alc7_centre'].id}")
-    ).json()
+    by_alc = (await client.get(f"/api/portal/verification?alc_id={hier['alc7_centre'].id}")).json()
     assert [r["activity"]["id"] for r in by_alc["items"]] == [a7["id"]]
     verified = (await client.get("/api/portal/verification?status=VERIFIED")).json()
     assert [r["activity"]["id"] for r in verified["items"]] == [done["id"]]
@@ -199,9 +210,7 @@ async def test_dcu_activity_and_queue_filtering(client, session, hier):
     queue = (await client.get("/api/portal/verification?queue_only=true")).json()
     assert {r["activity"]["id"] for r in queue["items"]} == {a4["id"], a7["id"]}
     assert all(r["activity"]["status"] in {"SUBMITTED", "RESUBMITTED"} for r in queue["items"])
-    typed = (
-        await client.get("/api/portal/verification?queue_only=true&activity_type=Nope")
-    ).json()
+    typed = (await client.get("/api/portal/verification?queue_only=true&activity_type=Nope")).json()
     assert typed["total"] == 0
 
 
@@ -266,14 +275,18 @@ async def test_dcu_changes_verified_to_rejected_and_back(client, session, hier):
     assert (again["verified"], again["rejected"], again["learners"]) == (1, 0, 25)
 
     history = reverified.json()["reviews"]
-    assert [(r["reviewer_role"], r["previous_status"], r["new_status"], r["is_decision_change"])
-            for r in history] == [
+    assert [
+        (r["reviewer_role"], r["previous_status"], r["new_status"], r["is_decision_change"])
+        for r in history
+    ] == [
         ("SBU", "SUBMITTED", "VERIFIED", False),
         ("DCU", "VERIFIED", "REJECTED", True),
         ("DCU", "REJECTED", "VERIFIED", True),
     ]
     assert [r["remark"] for r in history] == [
-        "SBU ok", "Evidence belongs to another event", "Confirmed with the partner",
+        "SBU ok",
+        "Evidence belongs to another event",
+        "Confirmed with the partner",
     ]
     stored = await session.scalar(select(Activity).where(Activity.id == uuid.UUID(aid)))
     await session.refresh(stored)
@@ -355,8 +368,14 @@ async def test_only_dcu_and_admin_may_change_decisions(client, session, hier):
 async def test_dcu_partner_directory_scoped_filtered_and_paginated(client, session, hier):
     _, _, p4 = await submit_activity(client, session, NASHIK_ALC_SBU4, with_partner=True)
     _, _, pn = await submit_activity(client, session, *PN_ALC, with_partner=True)
-    session.add(Partner(alc_id=hier["alc7_centre"].id, partner_name="Sai Industries",
-                        partner_type="Industry", ecosystem="Industry"))
+    session.add(
+        Partner(
+            alc_id=hier["alc7_centre"].id,
+            partner_name="Sai Industries",
+            partner_type="Industry",
+            ecosystem="Industry",
+        )
+    )
     await session.commit()
 
     await as_user(client, "dcu-nashik")
@@ -366,7 +385,9 @@ async def test_dcu_partner_directory_scoped_filtered_and_paginated(client, sessi
     assert directory["partner_types"] == ["College", "Industry"]
     row = next(p for p in directory["items"] if p["id"] == p4["id"])
     assert (row["sbu_code"], row["alc_code"], row["activity_count"]) == (
-        "SBU 4", NASHIK_ALC_SBU4, 1,
+        "SBU 4",
+        NASHIK_ALC_SBU4,
+        1,
     )
     for query, expected in (
         (f"sbu_id={hier['sbu7'].id}", {"Sai Industries"}),
@@ -416,15 +437,24 @@ async def test_dcu_reports_and_csv_exports_are_scoped(client, session, hier):
         (await client.get(f"/api/portal/reports/activities.csv?sbu_id={hier['sbu4'].id}")).text
     )
     assert [r["Activity Number"] for r in by_sbu] == [a4["activity_number"]]
-    for path in ("activities.csv", "partners.csv", "verification-status.csv",
-                 "sbu-performance.csv"):
+    for path in (
+        "activities.csv",
+        "partners.csv",
+        "verification-status.csv",
+        "sbu-performance.csv",
+    ):
         text = (await client.get(f"/api/portal/reports/{path}")).text
         assert "TEST PN" not in text and "Centre B" not in text, path
         assert pn["activity_number"] not in text, path
 
     other = hier["test_pn"].id
-    for path in ("reports/sbu-summary", "reports/sbu-performance.csv", "reports/activities.csv",
-                 "reports/partners.csv", "reports/verification-status.csv"):
+    for path in (
+        "reports/sbu-summary",
+        "reports/sbu-performance.csv",
+        "reports/activities.csv",
+        "reports/partners.csv",
+        "reports/verification-status.csv",
+    ):
         assert (await client.get(f"/api/portal/{path}?sbu_id={other}")).status_code == 404, path
     assert (
         await client.get(f"/api/portal/reports/sbu-summary?alc_id={hier['alc_b'].id}")
@@ -444,8 +474,11 @@ async def test_drafts_are_hidden_from_sbu_dcu_and_admin(client, session, hier):
         await submit_activity(client, session, NASHIK_ALC_SBU4)  # plus one real submission
     )[1].id
     draft_evidence = ActivityEvidence(
-        activity_id=uuid.UUID(draft["id"]), storage_key=f"private/{uuid.uuid4()}.pdf",
-        original_filename="draft.pdf", mime_type="application/pdf", file_size=5,
+        activity_id=uuid.UUID(draft["id"]),
+        storage_key=f"private/{uuid.uuid4()}.pdf",
+        original_filename="draft.pdf",
+        mime_type="application/pdf",
+        file_size=5,
     )
     session.add(draft_evidence)
     await session.commit()
@@ -454,8 +487,12 @@ async def test_drafts_are_hidden_from_sbu_dcu_and_admin(client, session, hier):
         await as_user(client, *who)
         lists = [
             (await client.get("/api/portal/activities?page_size=100")).json()["items"],
-            [r["activity"] for r in
-             (await client.get("/api/portal/verification?page_size=100")).json()["items"]],
+            [
+                r["activity"]
+                for r in (await client.get("/api/portal/verification?page_size=100")).json()[
+                    "items"
+                ]
+            ],
             (await client.get(f"/api/portal/alcs/{hier['alc4_centre'].id}")).json()["activities"],
         ]
         for items in lists:
@@ -481,12 +518,10 @@ async def test_drafts_are_hidden_from_sbu_dcu_and_admin(client, session, hier):
     assert (await client.get(f"/api/admin/activities/{draft['id']}")).status_code == 404
     admin_list = (await client.get("/api/admin/activities?page_size=100")).json()
     assert draft["id"] not in {r["activity"]["id"] for r in admin_list["items"]}
-    assert draft["activity_number"] not in (
-        await client.get("/api/admin/reports/activities.csv")
-    ).text
     assert (
-        await client.get(f"/api/admin/evidence/{draft_evidence.id}/access")
-    ).status_code == 404
+        draft["activity_number"] not in (await client.get("/api/admin/reports/activities.csv")).text
+    )
+    assert (await client.get(f"/api/admin/evidence/{draft_evidence.id}/access")).status_code == 404
 
 
 # --------------------------------------------------------------------------- #
@@ -496,14 +531,21 @@ async def test_admin_dcu_options_feed_the_create_user_form(client, hier):
     await as_user(client, *ADMIN)
     dcus = (await client.get("/api/admin/dcus")).json()["items"]
     assert [d["name"] for d in dcus] == [
-        "DCU Ahilya Nagar", "DCU Nashik", "DCU Pune North", "DCU Pune South",
+        "DCU Ahilya Nagar",
+        "DCU Nashik",
+        "DCU Pune North",
+        "DCU Pune South",
     ]
     assert all({"id", "code", "name"} <= set(d) for d in dcus)
     pune_south = next(d for d in dcus if d["code"] == "DCU_PUNE_SOUTH")
     created = await client.post(
         "/api/admin/users",
-        json={"username": "dcu-ps", "role": "DCU", "dcu_id": pune_south["id"],
-              "password": "BrandNewDcuPass123!"},
+        json={
+            "username": "dcu-ps",
+            "role": "DCU",
+            "dcu_id": pune_south["id"],
+            "password": "BrandNewDcuPass123!",
+        },
     )
     assert created.status_code == 201
     body = created.json()
@@ -544,6 +586,10 @@ async def test_cross_dcu_denied_on_new_endpoints_and_sbu_rules_unchanged(client,
     ).status_code == 404
 
     await as_user(client, NASHIK_ALC_SBU4)
-    for path in ("/api/portal/sbus", "/api/portal/lookups/alcs", "/api/portal/partner-directory",
-                 "/api/portal/reports/sbu-summary"):
+    for path in (
+        "/api/portal/sbus",
+        "/api/portal/lookups/alcs",
+        "/api/portal/partner-directory",
+        "/api/portal/reports/sbu-summary",
+    ):
         assert (await client.get(path)).status_code == 403, path

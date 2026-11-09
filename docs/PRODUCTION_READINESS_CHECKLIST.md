@@ -1,5 +1,50 @@
 # Production readiness checklist
 
+> **Current status — 2026-11-07: READY WITH CONDITIONS.** Fresh-install migration compatibility
+> blockers in 0011/0012 are repaired; isolated PostgreSQL 13 migration/concurrency tests, frontend
+> tests/build/lint, Ruff and compilation pass. The complete Python 3.11 backend suite and production
+> Python vulnerability audit now pass. Production deployment is still blocked on restored-production
+> staging rehearsal, infrastructure/capacity verification and explicit human approval. See the
+> [current stabilization report](PRE_DEPLOYMENT_STABILIZATION_20261107.md),
+> [workflow](YEARLY_ACTIVITY_EVIDENCE_WORKFLOW.md) and historical measured evidence below.
+>
+> The historical sections below retain earlier evidence. Current results above supersede the old
+> manual YES/NO workflow, uncommitted-auth status and earlier dependency/load/recovery findings.
+
+## Current backend and Python dependency gates — 2026-11-07
+
+| Gate | Status | Evidence |
+| --- | --- | --- |
+| Complete backend suite on Python 3.11 | **PASS** | Managed CPython 3.11.15, pytest 9.2.0: 963 passed, 69 skipped, 0 failed in 793.79s |
+| PostgreSQL-specific backend coverage | **PASS** | 57 passed, 0 failed across 9 modules; only `alc_yearly_automated_test_20261107` used |
+| Complete backend Ruff gate | **PASS** | `.venv311-clean/Scripts/ruff.exe check app tests`: all checks passed |
+| Production Python dependency resolution | **PASS** | 45 pinned runtime packages from `constraints-runtime.txt`; `uv pip check` compatible |
+| Python dependency vulnerability audit | **PASS** | `pip-audit 2.10.1`: no known vulnerabilities; no ignored findings |
+
+The audit used the separately resolved runtime environment rather than the development environment.
+No critical or high Python vulnerability remains. Constraints are exact-pinned but not hash-pinned;
+adding hashes remains recommended supply-chain hardening and does not change this vulnerability gate.
+
+## Current release gates — 2026-11-04
+
+| Area | Classification | Limit |
+| --- | --- | --- |
+| Authentication | READY WITH CONDITIONS | Tested; coordinated0009/code rollout, HTTPS and cleanup schedule |
+| Authorization | READY WITH CONDITIONS | Functional/isolation/restore tests; production IAM and external test pending |
+| Yearly workflow | READY WITH CONDITIONS | Functional/race gates pass; controlled0010 rollout and browser UAT pending |
+| Database | READY WITH CONDITIONS | Disposable migrations/recovery pass; source remains0009; production sizing/TLS not inspected |
+| Dependencies | READY WITH CONDITIONS | Runtime scans clear;12 dev findings and Linux constraints remain |
+| Load capacity | NOT READY | All25/50/100/200 stages fail; pool/timeout/refusal issue unresolved |
+| Redis | READY WITH CONDITIONS | Atomic/outage/fallback/recovery pass on disposable Redis; production HA/ACL/TLS unverified |
+| Evidence storage | READY WITH CONDITIONS | Private S3/upload/recovery checks pass; production MinIO/IAM/TLS/scanning unverified |
+| Backup/restore | READY WITH CONDITIONS | Actual synthetic PG/S3 drill passes; real production retention/RPO/RTO unverified |
+| Monitoring | NOT VERIFIED | Local probes/logs only; deployment alerting and pool wait telemetry absent |
+| Production infrastructure | NOT VERIFIED | No deployment, proxy/TLS/worker budget/HA inspection |
+| Browser UAT | NOT VERIFIED | No full-stack browser/mobile/accessibility/codec acceptance |
+| CI enforcement | NOT VERIFIED | Disposable PostgreSQL/Redis quality workflow added locally; no hosted execution yet |
+
+## Historical evidence — 2026-11-03
+
 Date:2026-11-03. Overall status: **NOT READY**. READY applies only to stated repository/isolated-test evidence, never to uninspected production infrastructure. See [full audit](PRODUCTION_READINESS_AND_YEARLY_ACTIVITIES_AUDIT.md), [route matrix](AUTHORIZATION_ROUTE_MATRIX.md), and [validation results](audit-evidence/VALIDATION_RESULTS.md).
 
 | Area | Status | Evidence / required condition |

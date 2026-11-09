@@ -580,12 +580,15 @@ async def test_s3_access_denied_becomes_a_503(client, world, storage):
 # Header helpers
 # --------------------------------------------------------------------------- #
 def test_previewable_types_are_exactly_the_accepted_upload_types():
-    assert set(PREVIEWABLE_TYPES) == set(ALLOWED_MIMES)
+    from app.services.yearly_submissions import MIMES
+
+    assert set(PREVIEWABLE_TYPES) == set(ALLOWED_MIMES) | set(MIMES)
 
 
 @pytest.mark.parametrize(
     ("mime", "expected"),
     [("application/pdf", "application/pdf"), ("image/webp", "image/webp"),
+     ("video/mp4", "video/mp4"), ("video/webm", "video/webm"),
      ("text/html", "application/octet-stream"), ("image/svg+xml", "application/octet-stream"),
      ("application/pdf\r\nX-Evil: 1", "application/octet-stream"),
      (None, "application/octet-stream")],

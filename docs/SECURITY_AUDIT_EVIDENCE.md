@@ -1,5 +1,20 @@
 # Security and operational audit evidence
 
+> **Current status — 2026-11-04: NOT READY for production.** Evidence-based Yearly Activities
+> replaces manual marking. Auth checkpoint `53731d5` is committed locally. Final gates: 930 backend
+> passed / 68 skipped; 139 frontend passed; 17 PostgreSQL and 1 real Redis test passed. Runtime npm/pip
+> audits are clear; 12 dev npm entries and 11 baseline Ruff findings remain. Actual 25/50/100/200-VU
+> stages missed targets; 400/800 were not run. Bounded uploads and real PG/private-S3 restore passed.
+> Source DB remains 0009; production infrastructure/browser UAT remain unverified. See the
+> [complete current report](MASTER_IMPLEMENTATION_PRODUCTION_REPORT_20261104.md),
+> [workflow](YEARLY_ACTIVITY_EVIDENCE_WORKFLOW.md) and
+> [redacted measured results](audit-evidence/MASTER_RUNTIME_RESULTS.json).
+>
+> The historical sections below retain earlier evidence. Current results above supersede the old
+> manual YES/NO workflow, uncommitted-auth status and earlier dependency/load/recovery findings.
+
+## Historical evidence — 2026-11-03
+
 Review date: 2026-11-03. Scope: repository source and isolated automated tests; no deployment, production data mutation, or production penetration testing. The master production-readiness audit records final aggregate test counts and dependency scan results.
 
 Reference standards used to guide the review: [OWASP ASVS 5.0](https://github.com/OWASP/ASVS/tree/v5.0.0/5.0), [OWASP API Security Top 10](https://owasp.org/projects/api-security-project), and [API1:2023 object-level authorization](https://api-security.owasp.org/editions/2023/en/0xa1-broken-object-level-authorization/). These are review references, not a claim of ASVS certification or complete adversarial coverage.

@@ -56,10 +56,16 @@ def tables(connection) -> set[str]:
 
 def challenge_row(start, end, **values) -> dict:
     return {
-        "id": uuid.uuid4(), "name": "Growth Challenge", "start_date": start, "end_date": end,
+        "id": str(uuid.uuid4()), "name": "Growth Challenge", "start_date": start,
+        "end_date": end,
         "prospects_target": 40, "meetings_target": 20, "pilots_target": 10,
         "partnerships_target": 5, "created_at": NOW, "updated_at": NOW, **values,
     }
+
+
+def migrated_table(connection):
+    """Reflect the historical 0007 shape instead of using today's expanded ORM model."""
+    return sa.Table(TABLE, sa.MetaData(), autoload_with=connection)
 
 
 @pytest.fixture
@@ -106,7 +112,7 @@ def test_revision_chain_remains_linear_after_0006():
     config = Config()
     config.set_main_option("script_location", str(API_DIR / "alembic"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["20261103_0009"]
+    assert script.get_heads() == ["20261107_0012"]
     assert script.get_revision(REVISION).down_revision == PREVIOUS
     assert (MIGRATION.revision, MIGRATION.down_revision) == (REVISION, PREVIOUS)
 
@@ -130,15 +136,13 @@ def test_upgraded_table_matches_the_model(legacy):
         run(connection, "upgrade")
         inspector = sa.inspect(connection)
         migrated = {c["name"]: c["nullable"] for c in inspector.get_columns(TABLE)}
-        model = {c.name: c.nullable for c in GrowthChallenge.__table__.columns}
-        assert migrated == model
         assert set(migrated) == {
             "id", "name", "start_date", "end_date", "prospects_target", "meetings_target",
             "pilots_target", "partnerships_target", "created_by", "updated_by", "created_at",
             "updated_at",
         }
         assert {i["name"] for i in inspector.get_indexes(TABLE)} == {
-            i.name for i in GrowthChallenge.__table__.indexes}
+            "ix_growth_challenges_start_date", "ix_growth_challenges_end_date"}
         assert {c["name"] for c in inspector.get_check_constraints(TABLE)} == {
             "ck_growth_challenges_period_order", "ck_growth_challenges_targets_non_negative"}
         foreign_keys = {
@@ -150,9 +154,9 @@ def test_upgraded_table_matches_the_model(legacy):
 
 
 def test_upgraded_table_enforces_its_constraints(legacy):
-    table = Base.metadata.tables[TABLE]
     with legacy.begin() as connection:
         run(connection, "upgrade")
+        table = migrated_table(connection)
         connection.execute(sa.insert(table).values(
             challenge_row(date(2026, 10, 1), date(2026, 10, 1))))  # one-day period is valid
     for bad in (
@@ -160,16 +164,18 @@ def test_upgraded_table_enforces_its_constraints(legacy):
         challenge_row(date(2026, 12, 1), date(2026, 12, 30), pilots_target=-1),
     ):
         with pytest.raises(IntegrityError), legacy.begin() as connection:
+            table = migrated_table(connection)
             connection.execute(sa.insert(table).values(bad))
     with legacy.begin() as connection:
+        table = migrated_table(connection)
         assert connection.execute(sa.select(sa.func.count()).select_from(table)).scalar() == 1
 
 
 def test_downgrade_removes_only_the_new_table(legacy):
-    table = Base.metadata.tables[TABLE]
     with legacy.begin() as connection:
         before = tables(connection)
         run(connection, "upgrade")
+        table = migrated_table(connection)
         connection.execute(sa.insert(table).values(
             challenge_row(date(2026, 10, 1), date(2026, 10, 30))))
         run(connection, "downgrade")
@@ -180,12 +186,12 @@ def test_downgrade_removes_only_the_new_table(legacy):
 
 
 def test_upgrade_downgrade_reupgrade_cycle(legacy):
-    table = Base.metadata.tables[TABLE]
     with legacy.begin() as connection:
         run(connection, "upgrade")
         run(connection, "downgrade")
         run(connection, "upgrade")
         assert TABLE in tables(connection)
+        table = migrated_table(connection)
         connection.execute(sa.insert(table).values(
             challenge_row(date(2026, 10, 1), date(2026, 11, 14))))
         assert connection.execute(sa.select(table.c.end_date)).scalar() == date(2026, 11, 14)
@@ -199,7 +205,7 @@ def test_upgrade_is_idempotent_on_a_database_built_from_the_current_models():
     with engine.begin() as connection:
         Base.metadata.create_all(connection)
         connection.execute(sa.insert(table).values(
-            challenge_row(date(2026, 10, 1), date(2026, 10, 30))))
+            challenge_row(date(2026, 10, 1), date(2026, 10, 30), id=uuid.uuid4())))
         run(connection, "upgrade")
         run(connection, "upgrade")
         assert connection.execute(sa.select(sa.func.count()).select_from(table)).scalar() == 1
@@ -315,9 +321,13 @@ def test_pg_upgrade_from_a_database_without_the_table(pg_schema):
         "SELECT column_name, is_nullable FROM information_schema.columns "
         "WHERE table_name = 'growth_challenges'")}
     assert columns == {
-        c.name: "YES" if c.nullable else "NO" for c in GrowthChallenge.__table__.columns}
+        c.name: "YES" if c.nullable else "NO"
+        for c in GrowthChallenge.__table__.columns
+        if c.name not in {"description", "is_published"}
+    }
     constraints = {r[0] for r in pg(
-        "SELECT conname FROM pg_constraint WHERE conrelid = 'growth_challenges'::regclass")}
+        "SELECT conname FROM pg_constraint "
+        "WHERE conrelid = 'growth_challenges'::regclass AND contype <> 'n'")}
     assert constraints == {
         "pk_growth_challenges", "ck_growth_challenges_period_order",
         "ck_growth_challenges_targets_non_negative", "fk_growth_challenges_created_by_users",

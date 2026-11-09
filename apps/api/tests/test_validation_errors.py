@@ -14,9 +14,11 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from httpx import ASGITransport, AsyncClient
 from pydantic import BaseModel, Field, field_validator, model_validator
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
+from starlette.requests import Request
 
 from app.main import app as real_app
-from app.main import unhandled_error, validation_error
+from app.main import database_pool_timeout, unhandled_error, validation_error
 from tests.conftest import login
 
 ACTIVITY = {
@@ -243,6 +245,19 @@ async def test_real_login_validation_does_not_echo_password(strict_client):
     assert response.status_code == 422
     assert '"secret"' not in response.text
     assert response.json()["error"]["details"][0]["input"] == "[REDACTED]"
+
+
+async def test_database_pool_timeout_is_safe_retryable_503():
+    request = Request({"type": "http", "method": "GET", "path": "/api/test", "headers": []})
+    response = await database_pool_timeout(request, SQLAlchemyTimeoutError("synthetic"))
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "1"
+    body = json.loads(response.body)
+    assert body == {"error": {
+        "code": "SERVICE_BUSY",
+        "message": "The service is temporarily busy. Please try again.",
+    }}
+    assert b"synthetic" not in response.body
 
 
 # --------------------------------------------------------------------------- #

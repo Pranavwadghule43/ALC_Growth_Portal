@@ -1,6 +1,6 @@
 import http from 'k6/http'
 import { check, sleep } from 'k6'
-import { Counter } from 'k6/metrics'
+import { Counter, Trend } from 'k6/metrics'
 
 // Every run requires an explicit operator assertion of an isolated synthetic environment.
 // No production hostname or credentials are embedded in this file.
@@ -27,19 +27,35 @@ if (![25, 50, 100, 200, 400, 800].includes(vus)
   throw new Error('Allowed stages: 25/50/100/200; 400/800 require ALC_LOAD_ALLOW_STRESS=1')
 }
 const writeEnabled = __ENV.ALC_LOAD_SYNTHETIC_WRITES === '1'
+const steadyState = __ENV.ALC_LOAD_STEADY_STATE === '1'
 const timeoutCount = new Counter('portal_timeouts')
+const transportCount = new Counter('portal_transport_errors')
+const throttled = new Counter('portal_429')
+const serverErrors = new Counter('portal_5xx')
+const endpointTrends = {
+  admin_dashboard: new Trend('endpoint_admin_dashboard_ms', true),
+  portal_dashboard: new Trend('endpoint_portal_dashboard_ms', true),
+  yearly_definitions: new Trend('endpoint_yearly_definitions_ms', true),
+  yearly_submissions: new Trend('endpoint_yearly_submissions_ms', true),
+  regional_leaderboard: new Trend('endpoint_regional_leaderboard_ms', true),
+}
 export const options = {
   scenarios: { users: { executor: 'ramping-vus', startVUs: 0, stages: [
-    { duration: '1m', target: vus },
+    { duration: __ENV.ALC_LOAD_RAMP || '1m', target: vus },
     { duration: __ENV.ALC_LOAD_DURATION || '5m', target: vus },
-    { duration: '30s', target: 0 },
+    { duration: __ENV.ALC_LOAD_DOWN || '30s', target: 0 },
   ], gracefulRampDown: '30s' } },
-  summaryTrendStats: ['avg', 'min', 'med', 'p(50)', 'p(95)', 'p(99)', 'max'],
+  summaryTrendStats: ['avg', 'min', 'med', 'p(50)', 'p(90)', 'p(95)', 'p(99)', 'max'],
   thresholds: {
     http_req_failed: ['rate<0.01'],
     'http_req_duration{kind:ordinary}': ['p(95)<500'],
     'http_req_duration{kind:dashboard}': ['p(95)<1000'],
     checks: ['rate>0.99'],
+    endpoint_admin_dashboard_ms: ['p(95)<1000'],
+    endpoint_portal_dashboard_ms: ['p(95)<1000'],
+    endpoint_yearly_definitions_ms: ['p(95)<500'],
+    endpoint_yearly_submissions_ms: ['p(95)<500'],
+    endpoint_regional_leaderboard_ms: ['p(95)<500'],
   },
 }
 
@@ -54,17 +70,41 @@ function call(method, path, body, kind = 'ordinary') {
       headers, timeout: '10s', tags: { name: method + ' ' + path.replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/g, ':id'), kind },
       responseType: 'text',
     })
-  if (response.status === 0) timeoutCount.add(1)
+  if (response.status === 0) transportCount.add(1)
+  if (response.error_code === 1050) timeoutCount.add(1)
+  if (response.status === 429) throttled.add(1)
+  if (response.status >= 500) serverErrors.add(1)
+  const endpoint = {
+    'GET /admin/dashboard': 'admin_dashboard',
+    'GET /portal/dashboard': 'portal_dashboard',
+    'GET /yearly-activities/definitions': 'yearly_definitions',
+    'GET /yearly-activities/submissions': 'yearly_submissions',
+    'GET /leaderboard/region-scores': 'regional_leaderboard',
+  }[method + ' ' + path.split('?')[0]]
+  if (endpoint) endpointTrends[endpoint].add(response.timings.duration)
   check(response, { 'API returned success': r => r.status >= 200 && r.status < 300 })
   return response
 }
 
+function installSyntheticSession(user) {
+  if (!user.access_token || !user.csrf_token) {
+    throw new Error('Steady-state mode requires synthetic access_token and csrf_token')
+  }
+  const jar = http.cookieJar()
+  jar.set(base, 'access_token', user.access_token, { path: '/' })
+  jar.set(base, 'csrf_token', user.csrf_token, { path: '/' })
+}
+
 export default function () {
   const user = users[(__VU - 1) % users.length]
-  const login = call('POST', user.role === 'ADMIN' ? '/auth/admin-login' : '/auth/login', {
-    identifier: user.identifier, password: user.password,
-  }, 'login')
-  if (login.status !== 200) { sleep(5); return }
+  if (steadyState) {
+    installSyntheticSession(user)
+  } else {
+    const login = call('POST', user.role === 'ADMIN' ? '/auth/admin-login' : '/auth/login', {
+      identifier: user.identifier, password: user.password, role: user.role,
+    }, 'login')
+    if (login.status !== 200) { sleep(5); return }
+  }
   sleep(1 + Math.random() * 2)
   const prefix = user.role === 'ADMIN' ? '/admin' : '/portal'
   const year = __ENV.ALC_LOAD_YEAR || '2026'
@@ -73,27 +113,36 @@ export default function () {
     call('GET', prefix + '/dashboard', undefined, 'dashboard')
     sleep(1 + Math.random() * 2)
     call('GET', '/yearly-activities/definitions?year=' + year + '&page=1&page_size=25')
-    if (user.run_id) call('GET', '/yearly-activities/runs/' + user.run_id + '/completions?page=1&page_size=25')
-    call('GET', '/leaderboard/region-top10?year=' + year)
-    if (screen % 2 === 0) call('GET', '/leaderboard/region-scores?year=' + year)
+    if (user.run_id) call('GET', '/yearly-activities/submissions?year=' + year + '&run_id=' + user.run_id + '&page=1&page_size=25')
+    let submission
+    if (user.submission_id) {
+      const response = call('GET', '/yearly-activities/submissions/' + user.submission_id)
+      if (response.status === 200) submission = response.json()
+    }
+    // The real dashboard derives Top 10 from the cached complete regional ranking.
+    call('GET', '/leaderboard/region-scores?year=' + year)
     if (user.role === 'SBU' || user.role === 'DCU') {
       call('GET', '/portal/verification?page=1&page_size=25')
       call('GET', '/portal/alcs?page=1&page_size=25')
     }
     if (user.role === 'ADMIN') call('GET', '/admin/activities?page=1&page_size=25')
     // Optional write fixtures MUST belong to disposable synthetic data. Never finalize here.
-    if (writeEnabled && user.role === 'DCU' && user.run_id && user.alc_id) {
-      call('PATCH', '/yearly-activities/runs/' + user.run_id + '/completions/' + user.alc_id, {
-        completed: screen % 2 === 0,
+    if (writeEnabled && user.role === 'ALC' && submission?.status === 'DRAFT' && screen === 0) {
+      call('PATCH', '/yearly-activities/submissions/' + user.submission_id, {
+        completion_date: submission.completion_date, remarks: 'Synthetic isolated load draft details',
       })
     }
-    if (writeEnabled && ['DCU', 'SBU'].includes(user.role) && user.verification_activity_id
-      && screen === 0) {
-      call('POST', '/portal/activities/' + user.verification_activity_id + '/verify', {})
+    if (writeEnabled && user.role === 'DCU' && user.review_submission_id && screen === 0) {
+      const detail = call('GET', '/yearly-activities/submissions/' + user.review_submission_id)
+      if (detail.status === 200 && ['SUBMITTED', 'RESUBMITTED'].includes(detail.json('status'))) {
+        call('POST', '/yearly-activities/submissions/' + user.review_submission_id + '/review', {
+          revision: detail.json('revision'), decision: 'VERIFY', remarks: 'Synthetic load review',
+        })
+      }
     }
     if (screen === 4) call('GET', prefix + '/reports/activities.csv', undefined, 'report')
     sleep(2 + Math.random() * 3)
   }
-  call('POST', '/auth/logout')
+  if (!steadyState) call('POST', '/auth/logout')
   sleep(3 + Math.random() * 3)
 }

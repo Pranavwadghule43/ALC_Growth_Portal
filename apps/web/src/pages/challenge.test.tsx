@@ -184,7 +184,7 @@ describe('Admin Growth Challenge overview', () => {
     const before = fake.to('/admin/challenge').length
     await submit(container)
     expect(post).toHaveBeenCalledWith('/admin/growth-challenges', {
-      name: 'Summer drive', start_date: '2026-03-10', end_date: '2026-04-23',
+      name: 'Summer drive', description: '', is_published: true, start_date: '2026-03-10', end_date: '2026-04-23',
       prospects_target: 90, meetings_target: 20, pilots_target: 10, partnerships_target: 5,
     })
     expect(patch).not.toHaveBeenCalled()
@@ -216,7 +216,7 @@ describe('Admin Growth Challenge overview', () => {
     expect(container.textContent).toContain('Duration: 90 days (both dates included).')
     await submit(container)
     expect(patch).toHaveBeenCalledWith('/admin/growth-challenges/gc-1', {
-      name: 'Spring challenge', start_date: '2026-03-01', end_date: '2026-05-29',
+      name: 'Spring challenge', description: '', is_published: true, start_date: '2026-03-01', end_date: '2026-05-29',
       prospects_target: 40, meetings_target: 20, pilots_target: 10, partnerships_target: 5,
     })
     expect(post).not.toHaveBeenCalled()

@@ -24,7 +24,7 @@ from sqlalchemy.orm import selectinload
 
 from app.auth import hash_password_async
 from app.config import settings
-from app.database import get_db
+from app.database import get_db, release_read_only_transaction
 from app.dependencies import (
     USER_RESPONSE_LOADERS,
     load_user_for_response,
@@ -51,6 +51,7 @@ from app.models import (
     RefreshToken,
     User,
 )
+from app.response_cache import get_or_create
 from app.schemas import (
     ActivityOut,
     AlcReassignIn,
@@ -69,7 +70,7 @@ from app.schemas import (
     UserPage,
     UserPatch,
 )
-from app.services import alc_import, growth_challenge
+from app.services import alc_import, challenge_tracking, growth_challenge
 from app.services.activities import FINAL_STATUSES, admin_activity, review_activity
 from app.services.activity_lists import (
     activity_list_query,
@@ -103,115 +104,111 @@ DASHBOARD_DISTRIBUTION_STATUSES = tuple(
 )
 
 
-@router.get("/dashboard")
-async def dashboard(_: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+async def _dashboard_payload(db: AsyncSession):
     """System-wide Admin dashboard.
 
     Query shape (one pass over ``activities`` for every scalar metric):
 
-    1. ALC totals (``alcs``).
-    2. Activity metrics AND the per-status counts for the status distribution, as conditional
-       aggregates in a single scan of ``activities``.
-    3. Active partners (``partners``).
-    4. Submission trend: the latest 30 activity dates (walks the ``activity_date`` index).
-    5. Top verified activity types (verified rows only, via the ``status`` index).
+    The ALC, activity and active-partner aggregates are independent one-row subqueries in a
+    single statement. This preserves separate table scans without holding a connection across
+    three sequential round trips. Trend and category queries retain their existing semantics.
     """
-    alc_counts = (
+    alc_counts = select(
+        func.count(ALC.id).label("total_alcs"),
+        func.count(case((ALC.status == "ACTIVE", 1))).label("active_alcs"),
+    ).subquery("alc_counts")
+    activity_metrics = select(
+        func.count(case((Activity.status != ActivityStatus.DRAFT, 1))).label(
+            "activities_submitted"
+        ),
+        func.count(
+            case(
+                (
+                    Activity.status.in_(
+                        [
+                            ActivityStatus.SUBMITTED,
+                            ActivityStatus.RESUBMITTED,
+                            ActivityStatus.UNDER_REVIEW,
+                        ]
+                    ),
+                    1,
+                )
+            )
+        ).label("pending_verification"),
+        func.count(case((Activity.status == ActivityStatus.VERIFIED, 1))).label(
+            "verified_activities"
+        ),
+        func.count(case((Activity.status == ActivityStatus.CORRECTION_REQUIRED, 1))).label(
+            "correction_required"
+        ),
+        func.count(case((Activity.status == ActivityStatus.REJECTED, 1))).label(
+            "rejected_activities"
+        ),
+        func.coalesce(
+            func.sum(
+                case(
+                    (
+                        Activity.status == ActivityStatus.VERIFIED,
+                        Activity.learners_reached,
+                    ),
+                    else_=0,
+                )
+            ),
+            0,
+        ).label("verified_learners"),
+        func.coalesce(
+            func.sum(
+                case(
+                    (
+                        Activity.status == ActivityStatus.VERIFIED,
+                        Activity.leads_generated,
+                    ),
+                    else_=0,
+                )
+            ),
+            0,
+        ).label("verified_leads"),
+        func.coalesce(
+            func.sum(
+                case(
+                    (
+                        Activity.status == ActivityStatus.VERIFIED,
+                        Activity.admissions_generated,
+                    ),
+                    else_=0,
+                )
+            ),
+            0,
+        ).label("verified_admissions"),
+        # Status distribution, counted in the same pass (no second scan).
+        *(
+            func.count(case((Activity.status == status, 1))).label(status.value)
+            for status in DASHBOARD_DISTRIBUTION_STATUSES
+        ),
+    ).subquery("activity_metrics")
+    active_partners_query = (
+        select(func.count(Partner.id)).where(Partner.status == "ACTIVE").scalar_subquery()
+    )
+    summary = (
         (
             await db.execute(
                 select(
-                    func.count(ALC.id).label("total_alcs"),
-                    func.count(case((ALC.status == "ACTIVE", 1))).label("active_alcs"),
-                )
+                    *alc_counts.c,
+                    *activity_metrics.c,
+                    active_partners_query.label("active_partnerships"),
+                ).select_from(alc_counts.join(activity_metrics, literal(True)))
             )
         )
         .mappings()
         .one()
     )
-    metrics = (
-        (
-            await db.execute(
-                select(
-                    func.count(case((Activity.status != ActivityStatus.DRAFT, 1))).label(
-                        "activities_submitted"
-                    ),
-                    func.count(
-                        case(
-                            (
-                                Activity.status.in_(
-                                    [
-                                        ActivityStatus.SUBMITTED,
-                                        ActivityStatus.RESUBMITTED,
-                                        ActivityStatus.UNDER_REVIEW,
-                                    ]
-                                ),
-                                1,
-                            )
-                        )
-                    ).label("pending_verification"),
-                    func.count(case((Activity.status == ActivityStatus.VERIFIED, 1))).label(
-                        "verified_activities"
-                    ),
-                    func.count(
-                        case((Activity.status == ActivityStatus.CORRECTION_REQUIRED, 1))
-                    ).label("correction_required"),
-                    func.count(case((Activity.status == ActivityStatus.REJECTED, 1))).label(
-                        "rejected_activities"
-                    ),
-                    func.coalesce(
-                        func.sum(
-                            case(
-                                (
-                                    Activity.status == ActivityStatus.VERIFIED,
-                                    Activity.learners_reached,
-                                ),
-                                else_=0,
-                            )
-                        ),
-                        0,
-                    ).label("verified_learners"),
-                    func.coalesce(
-                        func.sum(
-                            case(
-                                (
-                                    Activity.status == ActivityStatus.VERIFIED,
-                                    Activity.leads_generated,
-                                ),
-                                else_=0,
-                            )
-                        ),
-                        0,
-                    ).label("verified_leads"),
-                    func.coalesce(
-                        func.sum(
-                            case(
-                                (
-                                    Activity.status == ActivityStatus.VERIFIED,
-                                    Activity.admissions_generated,
-                                ),
-                                else_=0,
-                            )
-                        ),
-                        0,
-                    ).label("verified_admissions"),
-                    # Status distribution, counted in the same pass (no second scan).
-                    *(
-                        func.count(case((Activity.status == status, 1))).label(status.value)
-                        for status in DASHBOARD_DISTRIBUTION_STATUSES
-                    ),
-                )
-            )
-        )
-        .mappings()
-        .one()
-    )
-    metrics = dict(metrics)
+    metrics = dict(summary)
+    metrics.pop("total_alcs")
+    metrics.pop("active_alcs")
+    active_partners = metrics.pop("active_partnerships")
     status_counts = {
         status: metrics.pop(status.value) for status in DASHBOARD_DISTRIBUTION_STATUSES
     }
-    active_partners = (
-        await db.scalar(select(func.count(Partner.id)).where(Partner.status == "ACTIVE")) or 0
-    )
     trend_rows = (
         await db.execute(
             select(Activity.activity_date, func.count(Activity.id))
@@ -230,8 +227,9 @@ async def dashboard(_: User = Depends(require_admin), db: AsyncSession = Depends
             .limit(8)
         )
     ).all()
-    return {
-        **alc_counts,
+    payload = {
+        "total_alcs": summary["total_alcs"],
+        "active_alcs": summary["active_alcs"],
         **metrics,
         "active_partnerships": active_partners,
         # Only statuses that occur, as the grouped query produced (no zero entries).
@@ -241,6 +239,28 @@ async def dashboard(_: User = Depends(require_admin), db: AsyncSession = Depends
         "submission_trend": [{"date": str(d), "count": c} for d, c in reversed(trend_rows)],
         "verified_categories": [{"name": n, "value": c} for n, c in categories],
     }
+    return payload
+
+
+@router.get("/dashboard")
+async def dashboard(_: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    # Authentication starts the shared session's implicit transaction.  End it before a
+    # cache lookup/lock wait; a miss starts a fresh read transaction in the builder.
+    await release_read_only_transaction(db)
+
+    async def build():
+        payload = await _dashboard_payload(db)
+        await release_read_only_transaction(db)
+        return payload
+
+    return (
+        await get_or_create(
+            "dashboard",
+            ("ADMIN", "regional"),
+            settings.response_cache_dashboard_ttl_seconds,
+            build,
+        )
+    ).value
 
 
 def queue_filters(status, activity_type, ecosystem, alc_id, date_from, date_to, search):
@@ -297,9 +317,7 @@ async def activities(
     total = await activity_total(db, filters)
     rows = (
         await db.execute(
-            activity_list_query(
-                ALC.alc_code, ALC.alc_name, ALC.status.label("alc_status")
-            )
+            activity_list_query(ALC.alc_code, ALC.alc_name, ALC.status.label("alc_status"))
             .join(ALC, Activity.alc_id == ALC.id)
             .where(*filters)
             .order_by(desc(Activity.submitted_at), desc(Activity.updated_at), desc(Activity.id))
@@ -348,9 +366,7 @@ async def get_activity(
         },
         # Admin is global; surface the ALC's assigned SBU for context (may be unassigned).
         "sbu": (
-            {"id": alc.sbu.id, "code": alc.sbu.code, "name": alc.sbu.name}
-            if alc.sbu
-            else None
+            {"id": alc.sbu.id, "code": alc.sbu.code, "name": alc.sbu.name} if alc.sbu else None
         ),
         "dcu": (
             {"id": alc.sbu.dcu.id, "code": alc.sbu.dcu.code, "name": alc.sbu.dcu.name}
@@ -882,6 +898,31 @@ async def challenge_progress(
     }
 
 
+@router.get("/growth-challenges/{challenge_id}/progress")
+async def scoped_growth_challenge_progress(
+    challenge_id: uuid.UUID,
+    paging: tuple[int, int] = Depends(pagination),
+    search: str | None = None,
+    sbu_id: uuid.UUID | None = None,
+    alc_id: uuid.UUID | None = None,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """All-region status counts using the same reporting semantics as DCU/SBU dashboards."""
+    payload = await challenge_tracking.progress(
+        db,
+        admin,
+        challenge_id,
+        page=paging[0],
+        page_size=paging[1],
+        search=search,
+        sbu_id=sbu_id,
+        alc_id=alc_id,
+    )
+    await release_read_only_transaction(db)
+    return payload
+
+
 async def _challenge_conflict(
     db: AsyncSession, start: date, end: date, exclude_id: uuid.UUID | None = None
 ) -> None:
@@ -903,6 +944,8 @@ async def _challenge_conflict(
 def _challenge_snapshot(challenge: GrowthChallenge) -> dict:
     return {
         "name": challenge.name,
+        "description": challenge.description,
+        "is_published": challenge.is_published,
         "start_date": str(challenge.start_date),
         "end_date": str(challenge.end_date),
         "targets": growth_challenge.targets_of(challenge),
@@ -917,9 +960,7 @@ async def _save_challenge(db: AsyncSession) -> None:
         # PostgreSQL exclusion constraint: a concurrent request configured an overlapping
         # period after this request's own overlap check. Nothing is saved or audited.
         await db.rollback()
-        raise HTTPException(
-            status_code=409, detail="Challenge periods cannot overlap."
-        ) from None
+        raise HTTPException(status_code=409, detail="Challenge periods cannot overlap.") from None
 
 
 @router.post("/growth-challenges", status_code=201)
@@ -934,6 +975,8 @@ async def create_growth_challenge(
     challenge = GrowthChallenge(
         id=uuid.uuid4(),
         name=payload.name,
+        description=payload.description,
+        is_published=payload.is_published,
         start_date=payload.start_date,
         end_date=payload.end_date,
         prospects_target=payload.prospects_target,
@@ -945,7 +988,12 @@ async def create_growth_challenge(
     )
     db.add(challenge)
     await record_audit(
-        db, "growth_challenge_created", "growth_challenge", challenge.id, admin, request,
+        db,
+        "growth_challenge_created",
+        "growth_challenge",
+        challenge.id,
+        admin,
+        request,
         _challenge_snapshot(challenge),
     )
     await _save_challenge(db)
@@ -976,7 +1024,12 @@ async def update_growth_challenge(
     if after != before:
         challenge.updated_by = admin.id
         await record_audit(
-            db, "growth_challenge_updated", "growth_challenge", challenge.id, admin, request,
+            db,
+            "growth_challenge_updated",
+            "growth_challenge",
+            challenge.id,
+            admin,
+            request,
             {"before": before, "after": after},
         )
         await _save_challenge(db)
@@ -1077,9 +1130,7 @@ async def create_user(
         if not await db.scalar(select(DCU.id).where(DCU.id == payload.dcu_id)):
             raise HTTPException(status_code=422, detail="Invalid DCU")
     elif payload.role == Role.ADMIN and (payload.alc_id or payload.sbu_id or payload.dcu_id):
-        raise HTTPException(
-            status_code=422, detail="Admin cannot belong to an ALC, SBU or DCU"
-        )
+        raise HTTPException(status_code=422, detail="Admin cannot belong to an ALC, SBU or DCU")
     if await db.scalar(select(User.id).where(User.username == payload.username)):
         raise HTTPException(status_code=409, detail="Username already exists")
     user = User(
@@ -1107,8 +1158,12 @@ async def update_user(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    user = await db.scalar(select(User).where(User.id == user_id).with_for_update()
-                           .execution_options(populate_existing=True))
+    user = await db.scalar(
+        select(User)
+        .where(User.id == user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if payload.is_active is not None:
@@ -1140,8 +1195,12 @@ async def delete_user(
     historical activities, evidence, reviews, partners, tasks, challenge history and reports
     are preserved (authorship references are detached, not deleted). ADMIN accounts and the
     admin's own account can never be deleted."""
-    user = await db.scalar(select(User).where(User.id == user_id).with_for_update()
-                           .execution_options(populate_existing=True))
+    user = await db.scalar(
+        select(User)
+        .where(User.id == user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if user.role == Role.ADMIN:
@@ -1164,9 +1223,7 @@ async def delete_user(
 
     # Detach authorship from historical rows so they survive (never cascade-delete business
     # data). Works on PostgreSQL and SQLite regardless of FK enforcement.
-    await db.execute(
-        update(Activity).where(Activity.created_by == user_id).values(created_by=None)
-    )
+    await db.execute(update(Activity).where(Activity.created_by == user_id).values(created_by=None))
     await db.execute(
         update(Activity).where(Activity.verified_by == user_id).values(verified_by=None)
     )
@@ -1292,12 +1349,16 @@ async def sbu_detail(
     if not sbu:
         raise HTTPException(status_code=404, detail="SBU not found")
     alcs_rows = (
-        await db.execute(
-            select(ALC.id, ALC.alc_code, ALC.alc_name, ALC.status)
-            .where(ALC.sbu_id == sbu_id)
-            .order_by(ALC.alc_code)
+        (
+            await db.execute(
+                select(ALC.id, ALC.alc_code, ALC.alc_name, ALC.status)
+                .where(ALC.sbu_id == sbu_id)
+                .order_by(ALC.alc_code)
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     users_rows = (
         await db.scalars(
             select(User)

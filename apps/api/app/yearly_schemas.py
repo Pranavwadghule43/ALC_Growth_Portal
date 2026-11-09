@@ -47,3 +47,22 @@ class RunIn(BaseModel):
 class CompletionIn(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     completed: bool | None
+
+
+class SubmissionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    completion_date: date | None = None
+    remarks: str = Field(default="", max_length=10000)
+
+
+class YearlyReviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    decision: Literal["VERIFY", "REQUEST_CORRECTION", "REJECT"]
+    remarks: str | None = Field(default=None, max_length=4000)
+    revision: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def require_reason(self):
+        if self.decision != "VERIFY" and not self.remarks:
+            raise ValueError("Review remarks are required for correction or rejection")
+        return self

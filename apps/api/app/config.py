@@ -34,7 +34,16 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     secret_key: str = "development-only-change-me-please-32-chars"
     database_url: str = "postgresql+asyncpg://alc:alc_dev_password@localhost:5432/alc_growth"
+    # Per-process SQLAlchemy pool. Keep the total deployment budget below PostgreSQL
+    # max_connections: workers * (pool_size + max_overflow) + operational reserve.
+    db_pool_size: int = Field(default=10, ge=1, le=100)
+    db_max_overflow: int = Field(default=20, ge=0, le=100)
+    db_pool_timeout_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
+    db_pool_recycle_seconds: int = Field(default=1800, ge=60, le=86_400)
     redis_url: str = "redis://localhost:6379/0"
+    response_cache_leaderboard_ttl_seconds: int = Field(default=120, ge=10, le=900)
+    response_cache_dashboard_ttl_seconds: int = Field(default=60, ge=10, le=300)
+    response_cache_definitions_ttl_seconds: int = Field(default=60, ge=10, le=300)
     cors_origins: str = "http://localhost:5173"
     cookie_secure: bool = False
     access_token_minutes: int = 15

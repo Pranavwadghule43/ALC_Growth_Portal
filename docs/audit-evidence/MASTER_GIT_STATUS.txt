@@ -1,0 +1,76 @@
+Final Git evidence — 2026-11-04
+
+> git branch --show-current
+dev1/production-blockers-remediation
+
+> git rev-parse HEAD
+53731d523cfb692746708cde9e3e84bed65c73f2
+
+> git log -6 --oneline
+53731d5 security: add persistent session revocation
+85250df feat: add dynamic yearly activities and five-metric scoring
+3aaec47 docs: add production deployment runbook
+ff0066d fix: bound S3 timeouts and retries
+9e30d97 feat: integrate health checks and structured logging
+906a0f7 ops: add backup and disaster recovery tooling
+
+> git status --short
+ M apps/api/app/main.py
+ M apps/api/app/models.py
+ M apps/api/app/routes/yearly_activities.py
+ M apps/api/app/services/evidence_delivery.py
+ M apps/api/app/services/leaderboard.py
+ M apps/api/app/services/yearly_activities.py
+ M apps/api/app/yearly_schemas.py
+ M apps/api/pyproject.toml
+ M apps/api/tests/conftest.py
+ M apps/api/tests/test_auth_session_migration.py
+ M apps/api/tests/test_evidence_delivery.py
+ M apps/api/tests/test_growth_challenge_migration.py
+ M apps/api/tests/test_yearly_activities.py
+ M apps/api/tests/test_yearly_activity_migration.py
+ M apps/api/tests/test_yearly_concurrency_postgres.py
+ M apps/api/tests/test_yearly_leaderboard.py
+ M apps/web/package-lock.json
+ M apps/web/package.json
+ M apps/web/src/components/leaderboard.tsx
+ M apps/web/src/pages/ActivityEditor.tsx
+ M apps/web/src/pages/YearlyActivities.tsx
+ M apps/web/src/pages/yearlyActivities.test.tsx
+ M apps/web/vite.config.ts
+ M docs/AUTHORIZATION_ROUTE_MATRIX.md
+ M docs/PRODUCTION_READINESS_AND_YEARLY_ACTIVITIES_AUDIT.md
+ M docs/PRODUCTION_READINESS_CHECKLIST.md
+ M docs/SECURITY_AUDIT_EVIDENCE.md
+ M docs/audit-evidence/VALIDATION_RESULTS.md
+ M tests/load/README.md
+ M tests/load/portal.k6.js
+?? alc-growth-portal-ui.png
+?? apps/api/alembic/versions/20261104_0010_yearly_evidence.py
+?? apps/api/app/services/yearly_submissions.py
+?? apps/api/app/upload_limits.py
+?? apps/api/constraints-dev.txt
+?? apps/api/constraints-runtime.txt
+?? apps/api/tests/test_yearly_evidence_migration.py
+?? apps/api/tests/test_yearly_evidence_workflow.py
+?? apps/web/src/components/YearlySubmissions.test.tsx
+?? apps/web/src/components/YearlySubmissions.tsx
+?? docs/MASTER_IMPLEMENTATION_PRODUCTION_REPORT_20261104.md
+?? docs/YEARLY_ACTIVITY_EVIDENCE_WORKFLOW.md
+?? docs/audit-evidence/MASTER_CHANGED_FILES.txt
+?? docs/audit-evidence/MASTER_DEPENDENCY_REMEDIATION.md
+?? docs/audit-evidence/MASTER_GIT_STATUS.txt
+?? docs/audit-evidence/MASTER_RUNTIME_RESULTS.json
+?? tests/load/isolated_drill.py
+?? tests/load/recovery_drill.py
+?? tests/load/run_isolated_load.py
+?? tests/load/upload_capacity.py
+
+> git diff --check
+PASS (exit 0). Git line-ending normalization notices, if emitted, are not whitespace failures.
+
+> git diff --cached --stat
+No staged changes.
+
+No push/deployment/reset. Source DB 55432 remains 0009 and unchanged by this task. Port 5432 unused.
+Only the verified task-owned containers/processes were removed; backup artifacts remain in .local/master-recovery-complete/.

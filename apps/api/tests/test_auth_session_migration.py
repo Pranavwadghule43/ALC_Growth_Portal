@@ -93,7 +93,7 @@ def test_revision_graph_is_linear():
     config = Config()
     config.set_main_option("script_location", str(API_DIR / "alembic"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == [REVISION]
+    assert script.get_heads() == ["20261107_0012"]
     assert script.get_revision(REVISION).down_revision == "20261103_0008"
 
 
@@ -126,7 +126,7 @@ async def test_postgres_full_chain_and_legacy_upgrade_downgrade():
             created = True
         async with engine.begin() as conn:
             await conn.execute(sa.text(f'SET LOCAL search_path TO "{schema}"'))
-            await conn.run_sync(migrate, "upgrade", "head")
+            await conn.run_sync(migrate, "upgrade", REVISION)
             assert await conn.scalar(sa.text("SELECT version_num FROM alembic_version")) == REVISION
             user_id = uuid.uuid4()
             await conn.execute(sa.insert(User.__table__), {"id": user_id,
@@ -138,7 +138,7 @@ async def test_postgres_full_chain_and_legacy_upgrade_downgrade():
             assert await conn.scalar(sa.text("SELECT password_hash FROM users")) == "unchanged"
             assert await conn.scalar(sa.text("SELECT token_hash FROM refresh_tokens")) == "b" * 64
             assert await conn.scalar(sa.text("SELECT to_regclass('auth_sessions')")) is None
-            await conn.run_sync(migrate, "upgrade", "head")
+            await conn.run_sync(migrate, "upgrade", REVISION)
             assert await conn.scalar(sa.text("SELECT session_id FROM refresh_tokens")) is None
             fk = await conn.execute(sa.text(
                 "SELECT confdeltype::text FROM pg_constraint WHERE conrelid = "

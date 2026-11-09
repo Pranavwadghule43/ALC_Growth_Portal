@@ -1,0 +1,85 @@
+name: Quality gates
+
+on:
+  pull_request:
+  push:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend, migrations, and integrations
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: alc_ci
+          POSTGRES_PASSWORD: alc_ci_password
+          POSTGRES_DB: alc_ci_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U alc_ci -d alc_ci_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      APP_ENV: test
+      DATABASE_URL: sqlite+aiosqlite:///:memory:
+      ALC_TEST_POSTGRES_URL: postgresql+asyncpg://alc_ci:alc_ci_password@127.0.0.1:5432/alc_ci_test
+      ALC_ISOLATED_TEST: "1"
+      LOGIN_RATE_LIMIT_TEST_REDIS_URL: redis://127.0.0.1:6379/5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: apps/api/pyproject.toml
+      - name: Install API and test dependencies
+        run: python -m pip install -c constraints-dev.txt -e ".[dev]"
+      - name: Check Alembic graph has one head
+        run: python -m alembic heads
+      - name: Lint backend
+        run: python -m ruff check app tests scripts
+      - name: Run backend regression and disposable integrations
+        run: python -m pytest -q -rs
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.1"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install web dependencies
+        run: npm ci
+      - name: Run frontend tests
+        run: npm run test
+      - name: Lint frontend
+        run: npm run lint
+      - name: Build frontend
+        env:
+          VITE_API_URL: /api
+        run: npm run build

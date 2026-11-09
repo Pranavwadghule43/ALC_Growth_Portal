@@ -42,7 +42,6 @@ ALC in the region).
 from __future__ import annotations
 
 import uuid
-from bisect import bisect_left
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
@@ -62,6 +61,7 @@ from app.models import (
     YearlyActivityCompletion,
     YearlyActivityDCURun,
     YearlyActivityDefinition,
+    YearlyActivitySubmission,
 )
 from app.services.growth_challenge import current_date
 from app.services.yearly_activities import eligible_activity_ids
@@ -120,14 +120,16 @@ def regional_metrics_query(year: int | None = None):
     """One aggregate statement; a metadata-only row preserves empty-ranking counts."""
     eligible = eligible_yearly_activities_query(activity_year(year))
     completion = YearlyActivityCompletion
+    submission = YearlyActivitySubmission
     yearly = (
         select(completion.alc_id, eligible.c.rcu_id,
                func.count(func.distinct(completion.yearly_activity_id))
                .label("yearly_completed_count"))
         .join(eligible, eligible.c.id == completion.yearly_activity_id)
+        .join(submission, submission.participation_id == completion.id)
         .join(YearlyActivityDCURun,
               YearlyActivityDCURun.id == completion.yearly_activity_dcu_run_id)
-        .where(completion.completed.is_(True), YearlyActivityDCURun.status == "FINALIZED")
+        .where(submission.status == "VERIFIED", YearlyActivityDCURun.status == "FINALIZED")
         .group_by(completion.alc_id, eligible.c.rcu_id)
         .subquery("yearly_completion")
     )
@@ -200,27 +202,44 @@ def regional_metrics_query(year: int | None = None):
 
 
 def percentile_scores(values: list[int]) -> list[Fraction]:
-    """Regional percentile of each value among ``values`` (all eligible ALCs), as exact
-    fractions in 0..100. Equal values get equal scores."""
+    """Regional percentile of each value among ``values`` as exact fractions in 0..100.
+
+    Equal values share one precomputed Fraction. This preserves the established strictly-
+    lower percentile definition while avoiding a bisect and Fraction construction for every
+    ALC when many centres share the same metric value.
+    """
     if not values:
         return []
     ordered = sorted(values)
     if ordered[0] == ordered[-1]:
-        # Every eligible ALC has the same value (or there is only one eligible ALC).
-        return [Fraction(100) if value > 0 else Fraction(0) for value in values]
+        component = Fraction(100) if ordered[0] > 0 else Fraction(0)
+        return [component] * len(values)
     denominator = len(values) - 1
-    return [Fraction(100 * bisect_left(ordered, value), denominator) for value in values]
+    by_value: dict[int, Fraction] = {}
+    lower = 0
+    index = 0
+    while index < len(ordered):
+        value = ordered[index]
+        by_value[value] = Fraction(100 * lower, denominator)
+        next_index = index + 1
+        while next_index < len(ordered) and ordered[next_index] == value:
+            next_index += 1
+        lower += next_index - index
+        index = next_index
+    return [by_value[value] for value in values]
 
 
 def score_rows(rows: list[LeaderboardRow]) -> list[LeaderboardRow]:
     """Fill each row's component and final scores, normalised over every row given."""
-    for metric in METRICS:
-        for row, component in zip(
-            rows, percentile_scores([getattr(r, metric) for r in rows]), strict=True
-        ):
-            row.components[metric] = component
     for row in rows:
-        row.score = sum((row.components[m] * WEIGHTS[m] for m in METRICS), Fraction(0))
+        row.components.clear()
+    for metric in METRICS:
+        values = [getattr(row, metric) for row in rows]
+        for row, component in zip(rows, percentile_scores(values), strict=True):
+            row.components[metric] = component
+    equal_weight = WEIGHTS[METRICS[0]]
+    for row in rows:
+        row.score = sum((row.components[m] for m in METRICS), Fraction(0)) * equal_weight
     return rows
 
 

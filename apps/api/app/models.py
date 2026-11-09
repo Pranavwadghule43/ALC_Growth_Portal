@@ -18,6 +18,7 @@ from sqlalchemy import (
     UniqueConstraint,
     false,
     text,
+    true,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -328,6 +329,10 @@ class GrowthChallenge(Base, TimestampMixin):
     )
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(150))
+    description: Mapped[str] = mapped_column(Text, default="", server_default="")
+    is_published: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true(), index=True
+    )
     start_date: Mapped[date] = mapped_column(Date, index=True)
     end_date: Mapped[date] = mapped_column(Date, index=True)
     prospects_target: Mapped[int] = mapped_column(Integer, default=40)
@@ -386,7 +391,12 @@ class YearlyActivityDefinition(Base, TimestampMixin):
 
     __tablename__ = "yearly_activity_definitions"
     __table_args__ = (
-        UniqueConstraint("rcu_id", "calendar_year", "activity_code"),
+        UniqueConstraint(
+            "introduced_by_dcu_id",
+            "calendar_year",
+            "activity_code",
+            name="uq_yearly_activity_definition_dcu_year_code",
+        ),
         CheckConstraint("calendar_year BETWEEN 2000 AND 2100", name="valid_year"),
         CheckConstraint("activity_code = upper(trim(activity_code))", name="normalized_code"),
     )
@@ -487,3 +497,66 @@ class YearlyActivityCompletion(Base, TimestampMixin):
     updated_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
+
+
+class YearlyActivitySubmission(Base, TimestampMixin):
+    """Evidence workflow on a stable participant snapshot; legacy YES is never promoted."""
+
+    __tablename__ = "yearly_activity_submissions"
+    __table_args__ = (
+        CheckConstraint("status IN ('DRAFT','SUBMITTED','CORRECTION_REQUIRED',"
+                        "'RESUBMITTED','VERIFIED','REJECTED')", name="valid_status"),
+        CheckConstraint("revision >= 0", name="valid_revision"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    participation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("yearly_activity_completions.id", ondelete="RESTRICT"), unique=True
+    )
+    status: Mapped[str] = mapped_column(String(24), default="DRAFT", index=True)
+    completion_date: Mapped[date | None] = mapped_column(Date)
+    remarks: Mapped[str] = mapped_column(Text, default="")
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resubmitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+class YearlyActivityEvidence(Base):
+    __tablename__ = "yearly_activity_evidence"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    submission_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("yearly_activity_submissions.id", ondelete="RESTRICT"), index=True
+    )
+    storage_key: Mapped[str] = mapped_column(String(512), unique=True)
+    original_filename: Mapped[str] = mapped_column(String(255))
+    mime_type: Mapped[str] = mapped_column(String(100))
+    file_size: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class YearlyActivityReview(Base):
+    __tablename__ = "yearly_activity_reviews"
+    __table_args__ = (UniqueConstraint("submission_id", "revision"),)
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    submission_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("yearly_activity_submissions.id", ondelete="RESTRICT"), index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer)
+    reviewer_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    reviewer_role: Mapped[str] = mapped_column(String(20), default="DCU")
+    previous_status: Mapped[str] = mapped_column(String(24))
+    decision: Mapped[str] = mapped_column(String(32))
+    remarks: Mapped[str | None] = mapped_column(Text)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(SAJSON)
+    reviewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

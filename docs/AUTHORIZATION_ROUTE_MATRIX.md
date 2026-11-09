@@ -1,5 +1,29 @@
 # API authorization route matrix
 
+## Current yearly evidence routes — 2026-11-04
+
+All routes below are under `/api/yearly-activities`; unsafe methods retain CSRF protection.
+Existing registry, scheduling, hierarchy and authentication guards are preserved.
+
+| Route | ALC | SBU | DCU | ADMIN |
+| --- | --- | --- | --- | --- |
+| GET `/submissions` | Own applicable participation | Current authorized ALCs | Own run + current hierarchy | Oversight |
+| POST `/runs/{id}/submission` | Own snapshot, open initial window | 403 | 403 | 403 |
+| GET `/submissions/{id}` | Own history/draft | Scoped submitted history | Responsible scoped submitted history | Submitted history |
+| PATCH `/submissions/{id}` | Own editable draft/correction | 403 | 403 | 403 |
+| POST `/submissions/{id}/submit` | Own validated evidence revision | 403 | 403 | 403 |
+| POST `/submissions/{id}/review` | 403 | 403 | Responsible scope; pending exact revision only | 403 |
+| POST `/submissions/{id}/evidence` | Own editable submission; bounded file | 403 | 403 | 403 |
+| DELETE `/evidence/{id}` | Own editable submission; soft removal | 403 | 403 | 403 |
+| GET `/evidence/{id}/access` and `/content` | Own proof | Authorized submitted proof | Responsible authorized submitted proof | Submitted proof |
+| Retired PATCH `/runs/{id}/completions/{alc}` | 403 | 403 | 410 | 403 |
+
+Cross-scope IDs return 404. Draft details and newly added correction evidence stay private until
+submission/resubmission. VERIFIED, REJECTED and finalized history cannot be edited through normal
+workflow. The historical matrix's manual completion mutation is superseded by this section.
+
+## Historical route review — 2026-11-03
+
 Read-only source review dated 2026-11-03. Every endpoint below is listed individually. Role guards are server-side; resource-scope helpers remain necessary after role authorization. This inventory is source evidence, not a claim that every possible request permutation was dynamically tested.
 
 All authenticated dependencies call `get_current_user`, which reloads the current database account and checks active hierarchy. All role guards reject `must_change_password`. `/admin`, `/portal`, `/leaderboard` and `/yearly-activities` routers apply CSRF to unsafe methods. Authentication exceptions are detailed below. There are 83 existing routes and six new yearly-activity routes.
@@ -89,12 +113,12 @@ All authenticated dependencies call `get_current_user`, which reloads the curren
 | GET | `/api/admin/settings` | ADMIN | Regional administrative scope | N/A |
 | GET | `/api/leaderboard/region-top10` | ADMIN / DCU / SBU / ALC | Regional aggregate scores intentionally shared | N/A |
 | GET | `/api/leaderboard/region-scores` | ADMIN / DCU / SBU / ALC | Regional aggregate scores intentionally shared | N/A |
-| GET | `/api/yearly-activities/definitions` | ADMIN / DCU / SBU / ALC | ADMIN overview; DCU current RCU; SBU/ALC current region plus own scoped history; run details scoped | N/A |
-| POST | `/api/yearly-activities/definitions` | DCU | Own RCU identity; snapshot all required active DCUs | Yes |
+| GET | `/api/yearly-activities/definitions` | ADMIN / DCU / SBU / ALC | ADMIN overview; operational roles only definitions owned by their current parent DCU; direct legacy run IDs cannot bypass owner scope | N/A |
+| POST | `/api/yearly-activities/definitions` | DCU | Owner derived from authenticated DCU; creates only that DCU's run; ownership is not patchable | Yes |
 | PATCH | `/api/yearly-activities/runs/{run_id}` | DCU | Own DCU run only; lifecycle and schedule validation | Yes |
 | GET | `/api/yearly-activities/runs/{run_id}/completions` | ADMIN / DCU / SBU / ALC | ADMIN all; DCU current hierarchy; SBU current assigned ALCs; ALC self only | N/A |
-| PATCH | `/api/yearly-activities/runs/{run_id}/completions/{alc_id}` | DCU | Own run and currently assigned participating ALC only; MARKING only | Yes |
-| POST | `/api/yearly-activities/runs/{run_id}/finalize` | DCU | Own run only; ended MARKING, every snapshot ALC decided | Yes |
+| PATCH | `/api/yearly-activities/runs/{run_id}/completions/{alc_id}` | DCU | Retired manual marking API; always 410 after role/CSRF checks | Yes |
+| POST | `/api/yearly-activities/runs/{run_id}/finalize` | DCU | Own DCU-owned run only; ended MARKING and no unresolved reviews/corrections | Yes |
 
 ## Authentication rules
 

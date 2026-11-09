@@ -19,6 +19,15 @@ function useActivityYear() {
   return { year, current, choose: (next: number) => { const updated = new URLSearchParams(params); updated.set('activity_year', String(next)); setParams(updated, { replace: true }) } }
 }
 
+function useRegionalScores(year: number | null) {
+  return useQuery({
+    queryKey: ['region-scores', year],
+    queryFn: () => api.get<RegionTop10Data>(`/leaderboard/region-scores${year ? `?year=${year}` : ''}`),
+    staleTime: 120_000,
+    gcTime: 300_000,
+  })
+}
+
 function ActivityYearForm({ value, label, onChoose }: { value: number; label: string; onChoose: (year: number) => void }) {
   const [draft, setDraft] = useState(String(value))
   return <form className="mt-3 flex flex-wrap items-end gap-2" onSubmit={event => { event.preventDefault(); onChoose(Number(draft)) }}>
@@ -41,14 +50,16 @@ function ScoreTable({ items, rankLabel, scoreLabel, className = '' }: { items: R
   </table></div>
 }
 
-// Region Top 10 (``GET /leaderboard/region-top10``): the same regional ranking for ADMIN, DCU,
-// SBU and ALC. Fixed: no filters. Owns its query, so a failure here never breaks the page.
+// Region Top 10 is derived from the same cached full regional ranking used by All ALC Scores.
+// The backend /region-top10 endpoint remains available for API compatibility, but dashboards
+// no longer calculate the identical regional ranking twice.
 export function RegionTop10() {
   const selection = useActivityYear()
-  const q = useQuery({ queryKey: ['region-top10', selection.year], queryFn: () => api.get<RegionTop10Data>(`/leaderboard/region-top10${selection.year ? `?year=${selection.year}` : ''}`) })
+  const q = useRegionalScores(selection.year)
+  const topItems = q.data?.items.slice(0, 10) ?? []
   return <section className="mt-8" aria-labelledby="region-top10-title">
     <div className="mb-3"><h2 id="region-top10-title" className="font-bold text-navy">Region Top 10</h2><p className="text-xs text-slate-500">Five regional percentiles contribute 20% each: lifetime verified leads, admissions, activities and active partners, plus yearly activity completions for the selected year. Yearly results count after every participating DCU finalizes.</p><ActivityYearForm key={selection.year ?? 'current'} value={selection.year ?? q.data?.activity_year ?? selection.current} label="Top 10 activity year" onChoose={selection.choose} />{q.data && <p className="mt-2 text-xs text-slate-500">{q.data.activity_year}: {q.data.eligible_yearly_activities} regionally eligible activities.</p>}</div>
-    {q.isLoading ? <Loading label="Loading Region Top 10" /> : q.error || !q.data ? <ErrorState error={q.error} /> : !q.data.items.length ? <Empty title="No ranked ALCs yet" message="ALCs appear once any of the five performance metrics is positive." /> : <ScoreTable items={q.data.items} rankLabel="Rank" scoreLabel="Score" />}
+    {q.isLoading ? <Loading label="Loading Region Top 10" /> : q.error || !q.data ? <ErrorState error={q.error} /> : !topItems.length ? <Empty title="No ranked ALCs yet" message="ALCs appear once any of the five performance metrics is positive." /> : <ScoreTable items={topItems} rankLabel="Rank" scoreLabel="Score" />}
   </section>
 }
 
@@ -65,7 +76,7 @@ function unitOptions(units: (UnitBrief | null)[]): UnitBrief[] {
 // or renumbered. The list is fetched once; changing a filter makes no request.
 export function AllRegionScores() {
   const selection = useActivityYear()
-  const q = useQuery({ queryKey: ['region-scores', selection.year], queryFn: () => api.get<RegionTop10Data>(`/leaderboard/region-scores${selection.year ? `?year=${selection.year}` : ''}`) })
+  const q = useRegionalScores(selection.year)
   const [dcu, setDcu] = useState('')
   const [sbu, setSbu] = useState('')
   const items = q.data?.items ?? []
@@ -99,7 +110,7 @@ const SCORE_METRICS = ['Verified Leads', 'Verified Admissions', 'Verified Activi
 const EXAMPLE_SCORES = [['Verified Leads Score', 80], ['Verified Admissions Score', 60], ['Verified Activities Score', 100], ['Active Partners Score', 40], ['Yearly Activity Completion Score', 70]] as const
 const SCORE_NOTES = [
   'The first four metrics are lifetime totals; yearly activity completion uses the selected year (current year in Asia/Kolkata by default).',
-  'Only YES results for activities finalized by every participating DCU count toward yearly scoring.',
+  'Only VERIFIED evidence submissions for activities finalized by their owning DCU count toward yearly scoring.',
   'The yearly activity population is common to the region; there is no fixed annual activity target.',
   'Only VERIFIED activities contribute to Verified Leads, Verified Admissions and Verified Activities.',
   'Only ACTIVE partners are counted.',

@@ -10,6 +10,7 @@ from app.models import (
     YearlyActivityCompletion,
     YearlyActivityDCURun,
     YearlyActivityDefinition,
+    YearlyActivitySubmission,
 )
 from app.services import leaderboard
 from tests.test_activity_exports import StatementLog, as_user
@@ -51,6 +52,10 @@ async def annual(session, world, code="OUTREACH", year=2026, *, finalized=False,
         completed=completed,
     )
     session.add(completion)
+    await session.flush()
+    session.add(YearlyActivitySubmission(participation_id=completion.id,
+        status='VERIFIED' if completed is True else 'REJECTED' if completed is False else 'DRAFT',
+        revision=1 if completed is not None else 0, remarks='Synthetic scoring proof'))
     await session.commit()
     return definition, runs, completion
 
@@ -82,6 +87,20 @@ async def test_no_and_not_marked_never_award_points_and_empty_population_is_accu
     payload = await leaderboard.region_scores(session, 2026)
     assert payload["items"] == []
     assert payload["eligible_yearly_activities"] == 1
+
+
+@pytest.mark.parametrize("state", ["DRAFT", "SUBMITTED", "CORRECTION_REQUIRED",
+                                   "RESUBMITTED", "REJECTED", "LEGACY_ONLY"])
+async def test_unverified_states_and_legacy_yes_never_award_points(session, world, state):
+    _, _, member = await annual(session, world, finalized=True, completed=True)
+    sub = await session.scalar(select(YearlyActivitySubmission).where(
+        YearlyActivitySubmission.participation_id == member.id))
+    if state == "LEGACY_ONLY":
+        await session.delete(sub)
+    else:
+        sub.status = state
+    await session.commit()
+    assert (await leaderboard.region_scores(session, 2026))["items"] == []
 
 
 async def test_selected_year_changes_only_annual_metric_and_preserves_lifetime(session, world):

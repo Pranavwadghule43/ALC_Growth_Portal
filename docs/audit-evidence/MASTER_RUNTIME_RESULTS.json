@@ -1,0 +1,647 @@
+{
+  "stages": [
+    {
+      "vus": 25,
+      "harness_seconds": 112.14849680000043,
+      "requests": 458,
+      "rps": 4.362328697411451,
+      "latency_ms": {
+        "p(99)": 9265.02881569,
+        "max": 9991.071802,
+        "avg": 3450.014936834059,
+        "min": 124.700042,
+        "med": 3300.143962,
+        "p(50)": 3300.143962,
+        "p(90)": 5981.8077256,
+        "p(95)": 6848.2089315999965
+      },
+      "ordinary_ms": {
+        "med": 3193.594167,
+        "p(50)": 3193.594167,
+        "p(90)": 5858.740029,
+        "p(95)": 6410.1701676,
+        "p(99)": 8294.792820139994,
+        "max": 9355.386423,
+        "avg": 3301.094379666667,
+        "min": 124.700042,
+        "thresholds": {
+          "p(95)<500": true
+        }
+      },
+      "dashboard_ms": {
+        "p(90)": 6096.16461,
+        "p(95)": 6794.089087,
+        "p(99)": 8594.659893600001,
+        "max": 8891.048392,
+        "avg": 3997.140883962963,
+        "min": 213.942469,
+        "med": 3906.741719,
+        "p(50)": 3906.741719,
+        "thresholds": {
+          "p(95)<1000": true
+        }
+      },
+      "failure_rate": 0.004366812227074236,
+      "timeouts": 2,
+      "429": 0,
+      "5xx": 0,
+      "max_app_rss_bytes": 213831680,
+      "max_app_cpu_percent_one_core": 319.10990188289986,
+      "max_checkedout": 23,
+      "max_postgres_connections_including_monitor": 26,
+      "redis_all_probes_ok": true,
+      "docker_peaks": {
+        "alc-master-s3-20261104": {
+          "cpu_percent": 0.49,
+          "memory_samples": [
+            "127.6MiB",
+            "128.1MiB",
+            "128.3MiB",
+            "128.5MiB",
+            "128.6MiB",
+            "128.8MiB",
+            "128.9MiB",
+            "129.3MiB",
+            "129MiB"
+          ]
+        },
+        "alc-master-redis-20261104": {
+          "cpu_percent": 5.12,
+          "memory_samples": [
+            "5.148MiB",
+            "6.074MiB",
+            "6.539MiB",
+            "6.793MiB",
+            "6.816MiB",
+            "7.031MiB",
+            "7.062MiB",
+            "7.141MiB",
+            "7.266MiB",
+            "7.32MiB",
+            "7.41MiB",
+            "7.461MiB",
+            "7.508MiB",
+            "7.527MiB",
+            "7.719MiB",
+            "7.789MiB",
+            "7.879MiB",
+            "7.91MiB"
+          ]
+        },
+        "alc-master-isolated-20261104": {
+          "cpu_percent": 22.84,
+          "memory_samples": [
+            "109.3MiB",
+            "118MiB",
+            "125.5MiB",
+            "140.9MiB",
+            "158.9MiB",
+            "171.8MiB",
+            "177.1MiB",
+            "180.8MiB",
+            "186.3MiB",
+            "192.9MiB",
+            "196.4MiB",
+            "199.3MiB",
+            "200.8MiB",
+            "206.5MiB",
+            "209.3MiB",
+            "55.32MiB",
+            "65.78MiB",
+            "90.17MiB"
+          ]
+        }
+      },
+      "exit_code": 99,
+      "transport_failures": 2,
+      "connection_refused": 0,
+      "timeout_rate": 0.004366812227074236,
+      "server_error_rate": 0.0
+    },
+    {
+      "vus": 50,
+      "harness_seconds": 112.46533129999443,
+      "requests": 407,
+      "rps": 3.8767187373799885,
+      "latency_ms": {
+        "p(50)": 9167.28562,
+        "p(90)": 10000.8378794,
+        "p(95)": 10001.3668508,
+        "p(99)": 10001.98450418,
+        "max": 10044.646677,
+        "avg": 7836.471204464372,
+        "min": 147.152645,
+        "med": 9167.28562
+      },
+      "ordinary_ms": {
+        "avg": 7832.685847498084,
+        "min": 410.26149,
+        "med": 8959.754688,
+        "p(50)": 8959.754688,
+        "p(90)": 10001.113916,
+        "p(95)": 10001.384154,
+        "p(99)": 10002.4032442,
+        "max": 10044.646677,
+        "thresholds": {
+          "p(95)<500": true
+        }
+      },
+      "dashboard_ms": {
+        "avg": 7505.9400701492505,
+        "min": 147.152645,
+        "med": 8122.84918,
+        "p(50)": 8122.84918,
+        "p(90)": 10001.2403296,
+        "p(95)": 10001.4371605,
+        "p(99)": 10001.6368706,
+        "max": 10001.944886,
+        "thresholds": {
+          "p(95)<1000": true
+        }
+      },
+      "failure_rate": 0.4275184275184275,
+      "timeouts": 174,
+      "429": 0,
+      "5xx": 0,
+      "max_app_rss_bytes": 291713024,
+      "max_app_cpu_percent_one_core": 370.6938350649678,
+      "max_checkedout": 30,
+      "max_postgres_connections_including_monitor": 31,
+      "redis_all_probes_ok": true,
+      "docker_peaks": {
+        "alc-master-s3-20261104": {
+          "cpu_percent": 1.55,
+          "memory_samples": [
+            "123.6MiB",
+            "124.1MiB",
+            "124.3MiB",
+            "124.5MiB",
+            "124.8MiB",
+            "124MiB",
+            "125MiB"
+          ]
+        },
+        "alc-master-redis-20261104": {
+          "cpu_percent": 1.99,
+          "memory_samples": [
+            "6.754MiB",
+            "6.949MiB",
+            "6.984MiB",
+            "6.988MiB",
+            "7.227MiB",
+            "7.25MiB",
+            "7.266MiB",
+            "7.289MiB",
+            "7.434MiB",
+            "7.656MiB",
+            "7.781MiB",
+            "7.844MiB",
+            "7.875MiB",
+            "7.973MiB",
+            "8.016MiB",
+            "8.145MiB",
+            "8.211MiB",
+            "8.402MiB"
+          ]
+        },
+        "alc-master-isolated-20261104": {
+          "cpu_percent": 33.12,
+          "memory_samples": [
+            "118.8MiB",
+            "119.7MiB",
+            "137.9MiB",
+            "144.4MiB",
+            "176.5MiB",
+            "186.3MiB",
+            "197.7MiB",
+            "206.9MiB",
+            "212.5MiB",
+            "218.8MiB",
+            "222.4MiB",
+            "224.4MiB",
+            "231.3MiB",
+            "237.7MiB",
+            "241.7MiB",
+            "245MiB",
+            "248.4MiB",
+            "249.7MiB"
+          ]
+        }
+      },
+      "exit_code": 99,
+      "transport_failures": 174,
+      "connection_refused": 0,
+      "timeout_rate": 0.4275184275184275,
+      "server_error_rate": 0.0
+    },
+    {
+      "vus": 100,
+      "harness_seconds": 113.4717610000007,
+      "requests": 561,
+      "rps": 5.343535809055189,
+      "latency_ms": {
+        "med": 9992.002652,
+        "p(50)": 9992.002652,
+        "p(90)": 9996.735393,
+        "p(95)": 10000.888105,
+        "p(99)": 10001.5754334,
+        "max": 10001.845008,
+        "avg": 8757.544205194286,
+        "min": 268.840815
+      },
+      "ordinary_ms": {
+        "p(90)": 10000.8878117,
+        "p(95)": 10001.328334,
+        "p(99)": 10001.60680124,
+        "max": 10001.838054,
+        "avg": 8536.565173877356,
+        "min": 555.004269,
+        "med": 9991.446418,
+        "p(50)": 9991.446418,
+        "thresholds": {
+          "p(95)<500": true
+        }
+      },
+      "dashboard_ms": {
+        "p(99)": 10001.84173848,
+        "max": 10001.845008,
+        "avg": 7265.197549086208,
+        "min": 268.840815,
+        "med": 9865.4027735,
+        "p(50)": 9865.4027735,
+        "p(90)": 10001.2563371,
+        "p(95)": 10001.5216912,
+        "thresholds": {
+          "p(95)<1000": true
+        }
+      },
+      "failure_rate": 0.7825311942959001,
+      "timeouts": 439,
+      "429": 0,
+      "5xx": 0,
+      "max_app_rss_bytes": 319836160,
+      "max_app_cpu_percent_one_core": 425.5460524912594,
+      "max_checkedout": 30,
+      "max_postgres_connections_including_monitor": 31,
+      "redis_all_probes_ok": true,
+      "docker_peaks": {
+        "alc-master-s3-20261104": {
+          "cpu_percent": 1.26,
+          "memory_samples": [
+            "123.6MiB",
+            "124.1MiB",
+            "124.3MiB",
+            "124.5MiB",
+            "124.8MiB",
+            "125.3MiB",
+            "125MiB"
+          ]
+        },
+        "alc-master-redis-20261104": {
+          "cpu_percent": 2.44,
+          "memory_samples": [
+            "7.312MiB",
+            "7.582MiB",
+            "7.625MiB",
+            "7.645MiB",
+            "7.82MiB",
+            "7.949MiB",
+            "7.996MiB",
+            "8.07MiB",
+            "8.105MiB",
+            "8.211MiB",
+            "8.223MiB",
+            "8.332MiB",
+            "8.48MiB",
+            "8.523MiB",
+            "8.613MiB",
+            "8.828MiB",
+            "8.832MiB",
+            "9.922MiB"
+          ]
+        },
+        "alc-master-isolated-20261104": {
+          "cpu_percent": 23.95,
+          "memory_samples": [
+            "120.1MiB",
+            "122.2MiB",
+            "169.9MiB",
+            "181.4MiB",
+            "190.1MiB",
+            "193.3MiB",
+            "198.2MiB",
+            "204.8MiB",
+            "209.4MiB",
+            "211.2MiB",
+            "216MiB",
+            "221.2MiB",
+            "222.6MiB",
+            "224.6MiB",
+            "229.5MiB",
+            "230.6MiB",
+            "231.3MiB",
+            "232.9MiB"
+          ]
+        }
+      },
+      "exit_code": 99,
+      "transport_failures": 439,
+      "connection_refused": 0,
+      "timeout_rate": 0.7825311942959001,
+      "server_error_rate": 0.0
+    },
+    {
+      "vus": 200,
+      "harness_seconds": 110.02946720000182,
+      "requests": 2591,
+      "rps": 24.697035311918686,
+      "latency_ms": {
+        "p(90)": 9994.918375,
+        "p(95)": 9996.201198499999,
+        "p(99)": 10001.699841900001,
+        "max": 10041.728202,
+        "avg": 3294.8242988626002,
+        "min": 0,
+        "med": 0,
+        "p(50)": 0
+      },
+      "ordinary_ms": {
+        "p(99)": 10001.6302753,
+        "max": 10003.510809,
+        "avg": 2185.9059827127126,
+        "min": 0,
+        "med": 0,
+        "p(50)": 0,
+        "p(90)": 9994.2767185,
+        "p(95)": 9995.588011,
+        "thresholds": {
+          "p(95)<500": true
+        }
+      },
+      "dashboard_ms": {
+        "avg": 3118.9187512787717,
+        "min": 0,
+        "med": 0,
+        "p(50)": 0,
+        "p(90)": 10000.970642,
+        "p(95)": 10001.468652,
+        "p(99)": 10002.0239559,
+        "max": 10041.728202,
+        "thresholds": {
+          "p(95)<1000": true
+        }
+      },
+      "failure_rate": 0.9370899266692396,
+      "timeouts": 760,
+      "429": 0,
+      "5xx": 0,
+      "max_app_rss_bytes": 338804736,
+      "max_app_cpu_percent_one_core": 538.1005637119764,
+      "max_checkedout": 30,
+      "max_postgres_connections_including_monitor": 31,
+      "redis_all_probes_ok": true,
+      "docker_peaks": {
+        "alc-master-s3-20261104": {
+          "cpu_percent": 0.75,
+          "memory_samples": [
+            "124.5MiB",
+            "124.8MiB",
+            "125.8MiB",
+            "126.3MiB",
+            "126.6MiB",
+            "126.8MiB",
+            "127.1MiB",
+            "127.3MiB",
+            "127.9MiB",
+            "127MiB",
+            "128.3MiB"
+          ]
+        },
+        "alc-master-redis-20261104": {
+          "cpu_percent": 2.44,
+          "memory_samples": [
+            "10.01MiB",
+            "10.04MiB",
+            "10.09MiB",
+            "10.11MiB",
+            "10.18MiB",
+            "10.29MiB",
+            "10.3MiB",
+            "9.008MiB",
+            "9.051MiB",
+            "9.094MiB",
+            "9.27MiB",
+            "9.512MiB",
+            "9.594MiB",
+            "9.68MiB",
+            "9.727MiB",
+            "9.758MiB",
+            "9.934MiB"
+          ]
+        },
+        "alc-master-isolated-20261104": {
+          "cpu_percent": 21.45,
+          "memory_samples": [
+            "228.3MiB",
+            "233.9MiB",
+            "235.5MiB",
+            "235.6MiB",
+            "236.7MiB",
+            "237.8MiB",
+            "241.2MiB",
+            "241.9MiB",
+            "242.3MiB",
+            "242MiB",
+            "243.4MiB",
+            "243.6MiB",
+            "244.1MiB",
+            "244.4MiB",
+            "248.7MiB",
+            "249.8MiB",
+            "252.4MiB"
+          ]
+        }
+      },
+      "exit_code": 99,
+      "transport_failures": 2428,
+      "connection_refused": 1668,
+      "timeout_rate": 0.2933230412967966,
+      "server_error_rate": 0.0
+    }
+  ],
+  "upload": {
+    "stages": [
+      {
+        "concurrency": 1,
+        "mib": 1,
+        "started": "2026-11-04T04:27:28.707279+00:00",
+        "ended": "2026-11-04T04:27:29.255068+00:00",
+        "wall_seconds": 0.5474184999911813,
+        "responses": [
+          {
+            "status": 201,
+            "seconds": 0.5421823999931803,
+            "bytes": 1048576
+          }
+        ],
+        "sampled_peak_rss_bytes": 100974592,
+        "sampled_peak_spool_bytes": 0
+      },
+      {
+        "concurrency": 4,
+        "mib": 5,
+        "started": "2026-11-04T04:27:31.288308+00:00",
+        "ended": "2026-11-04T04:27:34.258234+00:00",
+        "wall_seconds": 2.9703275000065332,
+        "responses": [
+          {
+            "status": 201,
+            "seconds": 2.967233999996097,
+            "bytes": 5242880
+          },
+          {
+            "status": 201,
+            "seconds": 2.947747900005197,
+            "bytes": 5242880
+          },
+          {
+            "status": 201,
+            "seconds": 2.932844099996146,
+            "bytes": 5242880
+          },
+          {
+            "status": 201,
+            "seconds": 2.8982116999977734,
+            "bytes": 5242880
+          }
+        ],
+        "sampled_peak_rss_bytes": 121688064,
+        "sampled_peak_spool_bytes": 20971520
+      },
+      {
+        "concurrency": 4,
+        "mib": 10,
+        "started": "2026-11-04T04:27:36.013828+00:00",
+        "ended": "2026-11-04T04:27:41.315340+00:00",
+        "wall_seconds": 5.301880999992136,
+        "responses": [
+          {
+            "status": 201,
+            "seconds": 5.286100299999816,
+            "bytes": 10485760
+          },
+          {
+            "status": 201,
+            "seconds": 5.291147399999318,
+            "bytes": 10485760
+          },
+          {
+            "status": 201,
+            "seconds": 5.282974000001559,
+            "bytes": 10485760
+          },
+          {
+            "status": 201,
+            "seconds": 5.260443499995745,
+            "bytes": 10485760
+          }
+        ],
+        "sampled_peak_rss_bytes": 145432576,
+        "sampled_peak_spool_bytes": 39649280
+      }
+    ],
+    "over_limit": {
+      "status": 413,
+      "seconds": 0.4664117000065744,
+      "bytes": 10485761
+    },
+    "outage": {
+      "status": 503,
+      "seconds": 2.851855799992336,
+      "bytes": 2246
+    },
+    "outage_started": "2026-11-04T04:27:42.581242+00:00",
+    "all_uploads_passed": true,
+    "outage_controlled": true
+  },
+  "recovery": {
+    "started": "2026-11-04T04:31:35.755571+00:00",
+    "source": "alc_master_test",
+    "target": "alc_master_restore_test",
+    "checks": {
+      "postgres_counts": true,
+      "postgres_row_hashes": true,
+      "postgres_revision": true,
+      "postgres_normalized_constraints": true,
+      "postgres_indexes": true,
+      "object_checksums": true,
+      "copied_prebackup_access_revoked": true,
+      "authenticated_image": true,
+      "authenticated_existing_activity": true,
+      "anonymous_api_denied": true,
+      "anonymous_s3_denied": true,
+      "cross_alc_denied": true,
+      "missing_object_controlled": true,
+      "video_bytes_and_mime": true,
+      "video_range": true
+    },
+    "postgres_backup_seconds": 0.9806828000000678,
+    "postgres_backup_bytes": 476174,
+    "postgres_sha256": "49e0a991cb1c4ac7782094a1ae23f2ccba3fe4a7d2d8649c17af5993e906e719",
+    "backup_timestamp": "2026-11-04T04:31:35.755571+00:00",
+    "object_backup_seconds": 1.5689777999941725,
+    "object_count": 17,
+    "object_bytes": 79694362,
+    "postgres_restore_seconds": 0.6128723000001628,
+    "raw_constraint_text_identical": false,
+    "object_restore_seconds": 3.2500245999981416,
+    "restored_sessions_revoked_before_start": 566,
+    "measured_recovery_seconds": 20.73589899999206,
+    "backup_snapshot_age_at_recovery_seconds": 24.116364,
+    "finished": "2026-11-04T04:31:59.871935+00:00",
+    "all_checks_passed": true,
+    "table_counts": {
+      "activities": 800,
+      "activity_evidence": 1,
+      "activity_reviews": 0,
+      "activity_revisions": 0,
+      "alcs": 800,
+      "alembic_version": 1,
+      "audit_logs": 629,
+      "auth_sessions": 575,
+      "challenge_progress": 0,
+      "dcus": 8,
+      "growth_challenges": 1,
+      "notifications": 1,
+      "partners": 800,
+      "rcus": 2,
+      "refresh_tokens": 575,
+      "sbus": 16,
+      "tasks": 0,
+      "users": 821,
+      "yearly_activity_completions": 800,
+      "yearly_activity_dcu_runs": 4,
+      "yearly_activity_definitions": 1,
+      "yearly_activity_evidence": 16,
+      "yearly_activity_reviews": 2,
+      "yearly_activity_submissions": 800
+    },
+    "source_db_bytes": 16823987,
+    "restored_db_bytes": 12400307
+  },
+  "source_final": {
+    "port": 55432,
+    "database": "alc_growth",
+    "revision": "20261103_0009",
+    "yearly_activity_definitions": 1,
+    "yearly_activity_dcu_runs": 4,
+    "yearly_activity_completions": 0,
+    "auth_sessions": 3
+  },
+  "redis_recovery": {
+    "ready_before": 200,
+    "ready_during": 503,
+    "fallback_login": 200,
+    "ready_after": 200
+  }
+}
